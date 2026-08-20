@@ -55,26 +55,27 @@ pi install git:github.com/<you>/pi-multi-agent-team
 
 ### `/team-models` — 角色模型选择
 
-与 `/model` 同体验的纯列表选择：为每个角色（含领导者）依次弹出选择列表，候选 = `自动`（默认+fallback 链）→ 推荐变体（角色预设档位）→ 其余全部本机可用模型（按 provider 排序、标注 API key 状态）。选任意模型均可。
+与 `/model` 同体验的纯列表选择：为每个角色（含领导者）依次弹出选择列表，候选 = `默认档位`（角色预设模型 + fallback 链）→ 推荐变体 → 其余全部本机可用模型（按 provider 排序、标注 API key 状态）。选任意模型均可。
 
 选择后写入：
 
-- 子 agent 角色 → `~/.pi/agent/settings.json` 的 `subagents.agentOverrides.<agent>.model`（pi-subagents 原生生效，优先于包内默认）
+- 子 agent 角色 → `~/.pi/agent/settings.json` 的 `subagents.agentOverrides.<agent>.model`（pi-subagents 原生生效）
 - 领导者 → `~/.pi/agent/team.config.json` 的 `leaderModel`
-- 选「自动」→ 清除 override，恢复包内默认 + fallback 链（deepseek → opencode-go → qwen-token-plan，仅 provider 故障时按序回退）
+
+> **机制说明**：包内 agent frontmatter 不声明 `model`（这是 pi-subagents 的 override 生效前提），因此首次运行任意 team 命令（`/team`、`/team-models`、`/team-doctor`）时会把三个角色的默认档位自动物化为 settings 中的 override；「默认档位」选项 = 写回预设 spec（如 `deepseek/deepseek-v4-flash`），不是清除。手工删除 override 会使 agent 回退为继承会话模型，重新运行任意 team 命令即可恢复。
 
 **参数形式**（无 UI / 脚本化迁移，仅三个子 agent）：
 
 ```
-/team-models <agent> <provider/model|auto>
+/team-models <agent> <provider/model|default>
 
 示例：
 /team-models executor opencode-go/qwen3.7-max
 /team-models challenger openai-codex/gpt-5.6-luna
-/team-models deep-researcher auto
+/team-models deep-researcher default
 ```
 
-spec 会对照本机可用模型校验，非法时报错并提示用 `pi --list-models` 查询。
+spec 会对照本机可用模型校验，非法时报错并提示用 `pi --list-models` 查询。`default` = 写回角色预设档位。
 
 > 能力适配提醒：agent 的 system prompt 是角色契约，换任意模型后仍然成立；但 deep-researcher / challenger 角色建议配推理能力较强的模型（非推理模型的 thinking 会被 pi 自动 clamp 为 off），弱模型会明显降低研究/审查质量。
 

@@ -92,13 +92,25 @@ function fullCatalog(ctx: ExtensionContext) {
     .sort((a, b) => a.spec.localeCompare(b.spec));
 }
 
-/** 当前生效的 override（agentOverrides 里配置的 model），无则返回 AUTO */
-function currentOverride(agent: string): string {
-  const settings = readJsonSafe(USER_SETTINGS_PATH);
-  const sub = settings["subagents"] as Record<string, unknown> | undefined;
-  const overrides = sub?.["agentOverrides"] as Record<string, Record<string, unknown>> | undefined;
-  const model = overrides?.[agent]?.["model"];
-  return typeof model === "string" ? model : AUTO;
+/** 角色默认模型 spec（包内基准档位） */
+function roleDefaultSpec(role: RoleDef): string {
+  return `${role.defaultProvider}/${role.baseModelId}`;
+}
+
+/**
+ * 确保三个子 agent 的模型 override 已物化。
+ * 包内 agent frontmatter 不声明 model（以便用户 override 始终生效），
+ * 因此默认档位必须在首次运行 team 命令时写入 settings 作为 override；
+ * 缺失时 agent 会继承会话模型，不符合角色分工。
+ */
+function ensureDefaultsMaterialized(ctx: ExtensionContext): void {
+  for (const role of ROLES) {
+    if (!role.agent) continue;
+    if (currentOverride(role.agent) === AUTO) {
+      writeAgentOverride(role.agent, roleDefaultSpec(role));
+    }
+  }
+  void ctx; // ctx 预留（未来按机器差异默认档）
 }
 
 /** 将 agentOverride.model 写入/清除用户 settings.json（JSON 安全合并） */
@@ -113,6 +125,15 @@ function writeAgentOverride(agent: string, modelSpec: string | null): void {
     overrides[agent] = { ...(overrides[agent] ?? {}), model: modelSpec };
   }
   writeFileSync(USER_SETTINGS_PATH, JSON.stringify(settings, null, 2) + "\n", "utf-8");
+}
+
+/** 当前生效的 override（agentOverrides 里配置的 model），无则返回 AUTO */
+function currentOverride(agent: string): string {
+  const settings = readJsonSafe(USER_SETTINGS_PATH);
+  const sub = settings["subagents"] as Record<string, unknown> | undefined;
+  const overrides = sub?.["agentOverrides"] as Record<string, Record<string, unknown>> | undefined;
+  const model = overrides?.[agent]?.["model"];
+  return typeof model === "string" ? model : AUTO;
 }
 
 function writeLeaderSpec(spec: string | null): void {
@@ -136,6 +157,9 @@ export default function (pi: ExtensionAPI) {
   pi.registerCommand("team", {
     description: "激活多 Agent 协作模式：切换主会话到领导者模型（GPT5.6 Sol）并加载 team-orchestration 编排协议",
     handler: async (_args, ctx) => {
+      // 0. 物化子 agent 默认模型 override（首实现在任意 team 命令中完成）
+      ensureDefaultsMaterialized(ctx);
+
       // 1. 解析并切换领导者模型
       const leaderSpec = resolveLeaderSpec();
       const leaderModel = findModel(ctx, leaderSpec);
@@ -178,6 +202,9 @@ export default function (pi: ExtensionAPI) {
   pi.registerCommand("team-models", {
     description: "为团队各角色（领导者/研究员/挑战者/执行者）选择本机可用的任意模型；也可用参数形式 /team-models <agent> <provider/model|auto>；选「自动」恢复包内默认+fallback 链",
     handler: async (args, ctx) => {
+      // 0. 物化子 agent 默认模型 override
+      ensureDefaultsMaterialized(ctx);
+
       // ---- 参数形式：/team-models <agent> <spec|auto> ----
       const argParts = (args ?? "").trim().split(/\s+/).filter(Boolean);
       if (argParts.length >= 2) {
@@ -191,9 +218,9 @@ export default function (pi: ExtensionAPI) {
           );
           return;
         }
-        if (/^auto$/i.test(specArg)) {
-          writeAgentOverride(role.agent, null);
-          report(ctx, `${role.label} → 自动（默认+fallback 链）`, "success");
+        if (/^(auto|default)$/i.test(specArg)) {
+          writeAgentOverride(role.agent, roleDefaultSpec(role));
+          report(ctx, `${role.label} → 默认档位 ${roleDefaultSpec(role)}（+fallback 链）`, "success");
           return;
         }
         const spec = stripThinking(specArg);
@@ -214,7 +241,9 @@ export default function (pi: ExtensionAPI) {
       for (const role of ROLES) {
         const variants = findVariants(ctx, role.baseModelId);
         const current = role.agent ? currentOverride(role.agent) : resolveLeaderSpec();
-        const currentLabel = current === AUTO ? "自动（默认+fallback 链）" : current;
+        const currentLabel = current === AUTO
+          ? `默认档位 ${roleDefaultSpec(role)}`
+          : current;
 
         if (!ctx.hasUI) {
           lines.push(`${role.label}: 当前=${currentLabel}`);
@@ -222,12 +251,12 @@ export default function (pi: ExtensionAPI) {
           continue;
         }
 
-        // 候选：自动 → 推荐变体（角色基础模型）→ 其余全部可用模型
+        // 候选：默认档位（+fallback 链）→ 推荐变体（角色基础模型）→ 其余全部可用模型
         const recSpecs = new Set(variants.map((v) => v.spec));
         const others = catalog.filter((v) => !recSpecs.has(v.spec));
         const options = [
           role.agent
-            ? `自动（默认+fallback 链）  [当前: ${currentLabel}]`
+            ? `默认档位 ${roleDefaultSpec(role)}（+fallback 链）  [当前: ${currentLabel}]`
             : `自动（默认 openai-codex/gpt-5.6-sol）  [当前: ${currentLabel}]`,
           ...variants.map((v) =>
             `${v.spec}  推荐${ctx.modelRegistry.hasConfiguredAuth(v.model) ? "" : "  (无 API key)"}`,
@@ -239,10 +268,12 @@ export default function (pi: ExtensionAPI) {
         const choice = await ctx.ui.select(`${role.label} — 选择模型`, options);
         if (choice === undefined) continue; // 用户取消，跳过该角色
 
-        if (choice.startsWith("自动")) {
-          if (role.agent) writeAgentOverride(role.agent, null);
-          else writeLeaderSpec(null);
-          report(ctx, `${role.label} → 自动（默认+fallback 链）`, "success");
+        if (choice.startsWith("默认档位")) {
+          writeAgentOverride(role.agent!, roleDefaultSpec(role));
+          report(ctx, `${role.label} → 默认档位 ${roleDefaultSpec(role)}（+fallback 链）`, "success");
+        } else if (choice.startsWith("自动")) {
+          writeLeaderSpec(null);
+          report(ctx, `${role.label} → 自动（默认 openai-codex/gpt-5.6-sol）`, "success");
         } else {
           const spec = stripThinking(choice.split("  ")[0].trim());
           if (role.agent) writeAgentOverride(role.agent, spec);
@@ -262,6 +293,9 @@ export default function (pi: ExtensionAPI) {
   pi.registerCommand("team-doctor", {
     description: "团队环境体检：逐角色检查模型可解析、API key 可用、agentOverrides 生效、依赖工具存在",
     handler: async (_args, ctx) => {
+      // 0. 物化子 agent 默认模型 override
+      ensureDefaultsMaterialized(ctx);
+
       const out: string[] = ["团队体检报告", "──────────"];
       let allOk = true;
 
@@ -270,19 +304,21 @@ export default function (pi: ExtensionAPI) {
         const override = role.agent ? currentOverride(role.agent) : null;
         const leaderInfo = role.agent ? null : resolveLeaderSpecInfo();
         const effective = role.agent
-          ? (override === AUTO ? `${role.defaultProvider}/${role.baseModelId}` : override)
+          ? (override === AUTO ? roleDefaultSpec(role) : override)
           : leaderInfo!.spec;
-        const isOverride = role.agent ? override !== AUTO : leaderInfo!.isOverride;
+        const isDefault = role.agent
+          ? effective === roleDefaultSpec(role)
+          : !leaderInfo!.isOverride;
         const model = findModel(ctx, effective);
         if (!model) {
           allOk = false;
-          out.push(`✗ ${role.label}: 模型 ${effective} 不可解析（override=${isOverride ? effective : "自动"}）。运行 /team-models 重新选择`);
+          out.push(`✗ ${role.label}: 模型 ${effective} 不可解析（${isDefault ? "默认" : "自定义"}）。运行 /team-models 重新选择`);
           continue;
         }
         const authOk = ctx.modelRegistry.hasConfiguredAuth(model);
         if (!authOk) allOk = false;
         out.push(
-          `${authOk ? "✓" : "✗"} ${role.label}: ${model.provider}/${model.id}${isOverride ? "（override 生效）" : "（默认）"}${authOk ? "" : " — 无可用 API key"}`,
+          `${authOk ? "✓" : "✗"} ${role.label}: ${model.provider}/${model.id}（${isDefault ? "默认" : "自定义"}）${authOk ? "" : " — 无可用 API key"}`,
         );
       }
 
