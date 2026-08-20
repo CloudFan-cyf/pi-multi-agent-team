@@ -35,6 +35,12 @@ pi install git:github.com/<you>/pi-multi-agent-team
 
 更新：`pi update --extensions`。卸载：`pi remove git:github.com/<you>/pi-multi-agent-team`。
 
+> **网络受限机器（github.com 443 被阻断）的安装法**：可用 SSH over 443 安装：
+> ```bash
+> pi install 'ssh://git@ssh.github.com:443/<you>/pi-multi-agent-team.git'
+> ```
+> 然后把 `~/.pi/agent/settings.json` 中该包条目改写为 `git:ssh://git@ssh.github.com:443/<you>/pi-multi-agent-team.git`（加 `git:` 前缀）。原因：pi 本身接受裸 URL 条目，但 pi-subagents 的包级 agent 发现只解析 `git:`/`npm:`/路径形式的条目；普通机器用 `pi install git:github.com/...` 安装的条目天然带 `git:` 前缀，无需此步。
+
 ## 命令
 
 ### `/team` — 激活协作模式
