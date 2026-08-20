@@ -178,7 +178,7 @@ Frontmatter：`name: team-orchestration`，`description` 明确「/team 激活�
 - [x] **Step 4**：编写 `extensions/index.ts`（/team、/team-doctor 命令，模型解析与切换，体检逻辑） ✓
 - [x] **Step 5**：编写 README.md（安装、迁移、跨机器模型修正说明） ✓
 - [x] **Step 6**：本地安装验证（`pi install <本地路径>`），推送到私有 GitHub repo ✓（repo: CloudFan-cyf/pi-multi-agent-team）
-- [ ] **Step 7**：允许用户为三个 agent 指定任意 pi 可用模型（详细设计见下「Step 7 详细设计」）：扩展 `/team-models` 候选范围 + 参数形式，验证后 commit + push
+- [x] **Step 7**：允许用户为三个 agent 指定任意 pi 可用模型（详细设计见下「Step 7 详细设计」）：扩展 `/team-models` 候选范围 + 参数形式，验证后 commit + push ✓（实现中发现并解决：pi-subagents 的 agentOverrides.model 仅在 frontmatter 未声明 model 时生效，已改为 frontmatter 去 model + 默认档位物化为 override）
 - [ ] **Step 8**：端到端演练（见 Verification）——暂停：等待 GPT5.6 Sol 可用后执行
 
 ### Step 7 详细设计：任意模型指定
