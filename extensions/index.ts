@@ -1,0 +1,250 @@
+/**
+ * pi-multi-agent-team — 多 Agent 协作团队激活与管理命令
+ *
+ * /team         激活协作模式：切换主会话到领导者模型并加载编排协议 skill
+ * /team-models  为每个角色选择本机可用的模型提供方（写入 agentOverrides）
+ * /team-doctor  迁移/环境体检：模型、agent、工具逐项检查
+ *
+ * 依赖：pi-subagents（subagent 工具与 agent 定义加载）。
+ * 角色定义见本包 agents/ 目录，编排协议见 skills/team-orchestration/。
+ */
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { homedir } from "node:os";
+
+/** 领导者配置文件（跨机器可改 leaderModel） */
+const TEAM_CONFIG_PATH = join(homedir(), ".pi", "agent", "team.config.json");
+
+const USER_SETTINGS_PATH = join(homedir(), ".pi", "agent", "settings.json");
+
+interface RoleDef {
+  /** 展示名 */
+  label: string;
+  /** pi-subagents agent 名（leader 为空 = 主会话） */
+  agent?: string;
+  /** 基础模型 id（不含 provider 前缀） */
+  baseModelId: string;
+  /** 默认 provider */
+  defaultProvider: string;
+}
+
+const ROLES: RoleDef[] = [
+  { label: "领导者 Leader（主会话）", baseModelId: "gpt-5.6-sol", defaultProvider: "openai-codex" },
+  { label: "深度研究员 deep-researcher", agent: "deep-researcher", baseModelId: "deepseek-v4-pro", defaultProvider: "deepseek" },
+  { label: "设计挑战者 challenger", agent: "challenger", baseModelId: "deepseek-v4-pro", defaultProvider: "deepseek" },
+  { label: "执行者 executor", agent: "executor", baseModelId: "deepseek-v4-flash", defaultProvider: "deepseek" },
+];
+
+const AUTO = "__auto__";
+
+// ---------- 工具函数 ----------
+
+function readJsonSafe(path: string): Record<string, unknown> {
+  try {
+    return JSON.parse(readFileSync(path, "utf-8")) as Record<string, unknown>;
+  } catch {
+    return {};
+  }
+}
+
+/** 读取领导者模型（team.config.json 覆盖，缺省 openai-codex/gpt-5.6-sol） */
+function resolveLeaderSpec(): string {
+  const cfg = readJsonSafe(TEAM_CONFIG_PATH);
+  const m = cfg["leaderModel"];
+  return typeof m === "string" && m.includes("/") ? m : "openai-codex/gpt-5.6-sol";
+}
+
+/** 解析 "provider/modelId" 形式（也接受裸 id：跨 provider 唯一匹配） */
+function findModel(ctx: ExtensionContext, spec: string) {
+  if (spec.includes("/")) {
+    const [provider, modelId] = spec.split("/");
+    return ctx.modelRegistry.find(provider, modelId);
+  }
+  const matches = ctx.modelRegistry.getAvailable().filter((m) => m.id === spec);
+  return matches.length === 1 ? matches[0] : undefined;
+}
+
+/** 枚举某基础模型 id 在本机可用的所有 provider 变体 */
+function findVariants(ctx: ExtensionContext, baseModelId: string) {
+  return ctx.modelRegistry
+    .getAvailable()
+    .filter((m) => m.id === baseModelId)
+    .map((m) => ({ model: m, spec: `${m.provider}/${m.id}` }));
+}
+
+/** 当前生效的 override（agentOverrides 里配置的 model），无则返回 AUTO */
+function currentOverride(agent: string): string {
+  const settings = readJsonSafe(USER_SETTINGS_PATH);
+  const sub = settings["subagents"] as Record<string, unknown> | undefined;
+  const overrides = sub?.["agentOverrides"] as Record<string, Record<string, unknown>> | undefined;
+  const model = overrides?.[agent]?.["model"];
+  return typeof model === "string" ? model : AUTO;
+}
+
+/** 将 agentOverride.model 写入/清除用户 settings.json（JSON 安全合并） */
+function writeAgentOverride(agent: string, modelSpec: string | null): void {
+  const settings = readJsonSafe(USER_SETTINGS_PATH);
+  const sub = (settings["subagents"] ??= {}) as Record<string, unknown>;
+  const overrides = (sub["agentOverrides"] ??= {}) as Record<string, Record<string, unknown>>;
+  if (modelSpec === null) {
+    delete overrides[agent]?.["model"];
+    if (overrides[agent] && Object.keys(overrides[agent]).length === 0) delete overrides[agent];
+  } else {
+    overrides[agent] = { ...(overrides[agent] ?? {}), model: modelSpec };
+  }
+  writeFileSync(USER_SETTINGS_PATH, JSON.stringify(settings, null, 2) + "\n", "utf-8");
+}
+
+function writeLeaderSpec(spec: string | null): void {
+  const cfg = readJsonSafe(TEAM_CONFIG_PATH);
+  if (spec === null) delete cfg["leaderModel"];
+  else cfg["leaderModel"] = spec;
+  writeFileSync(TEAM_CONFIG_PATH, JSON.stringify(cfg, null, 2) + "\n", "utf-8");
+}
+
+function report(ctx: ExtensionContext, message: string, kind: "info" | "error" | "success" = "info"): void {
+  if (ctx.hasUI) {
+    ctx.ui.notify(message, kind);
+  } else {
+    console.log(`[${kind}] ${message}`);
+  }
+}
+
+// ---------- /team：激活协作模式 ----------
+
+export default function (pi: ExtensionAPI) {
+  pi.registerCommand("team", {
+    description: "激活多 Agent 协作模式：切换主会话到领导者模型（GPT5.6 Sol）并加载 team-orchestration 编排协议",
+    handler: async (_args, ctx) => {
+      // 1. 解析并切换领导者模型
+      const leaderSpec = resolveLeaderSpec();
+      const leaderModel = findModel(ctx, leaderSpec);
+      if (!leaderModel) {
+        report(ctx, `未找到领导者模型 ${leaderSpec}。用 /team-models 检查或修改 ${TEAM_CONFIG_PATH} 的 leaderModel`, "error");
+        return;
+      }
+      if (ctx.model?.id === leaderModel.id && ctx.model?.provider === leaderModel.provider) {
+        report(ctx, `主会话已是领导者模型 ${leaderModel.provider}/${leaderModel.id}`, "info");
+      } else {
+        const ok = await pi.setModel(leaderModel);
+        if (!ok) {
+          report(ctx, `领导者模型 ${leaderModel.provider}/${leaderModel.id} 无可用 API key，激活中止`, "error");
+          return;
+        }
+        report(ctx, `已切换到领导者模型 ${leaderModel.provider}/${leaderModel.id}`, "success");
+      }
+
+      // 2. 体检：subagent 工具（pi-subagents）
+      const allTools = pi.getAllTools().map((t) => t.name);
+      if (!allTools.includes("subagent")) {
+        report(ctx, "未检测到 subagent 工具：本包依赖 pi-subagents。请先运行 pi install npm:pi-subagents 并重启 pi", "error");
+        return;
+      }
+
+      // 3. 体检：web 工具（仅提示，不阻断——researcher 会降级）
+      const hasWeb = ["web_search", "fetch_content"].every((t) => allTools.includes(t));
+      if (!hasWeb) {
+        report(ctx, "提示：web_search/fetch_content 不可用，deep-researcher 将无法做外部调研（可 pi install npm:pi-web-access）", "error");
+      }
+
+      // 4. 加载编排协议 skill（激活协作模式）
+      await pi.sendUserMessage("/skill:team-orchestration", { deliverAs: "followUp", expandPromptTemplates: true });
+      report(ctx, "协作模式激活：编排协议已作为 follow-up 加载", "success");
+    },
+  });
+
+  // ---------- /team-models：角色模型提供方选择 ----------
+
+  pi.registerCommand("team-models", {
+    description: "为团队各角色（领导者/研究员/挑战者/执行者）选择本机可用的模型提供方；选「自动」恢复包内默认+fallback 链",
+    handler: async (_args, ctx) => {
+      const lines: string[] = [];
+      for (const role of ROLES) {
+        const variants = findVariants(ctx, role.baseModelId);
+        const current = role.agent ? currentOverride(role.agent) : resolveLeaderSpec();
+        const currentLabel =
+          current === AUTO ? "自动（默认+fallback 链）" : current;
+
+        if (!ctx.hasUI) {
+          lines.push(
+            `${role.label}: 当前=${currentLabel}；可用=${variants.map((v) => v.spec).join(", ") || "无"}`,
+          );
+          continue;
+        }
+
+        const options = [
+          `自动（默认+fallback 链）  [当前: ${currentLabel}]`,
+          ...variants.map((v) =>
+            `${v.spec}${ctx.modelRegistry.hasConfiguredAuth(v.model) ? "" : "  (无 API key)"}`,
+          ),
+        ];
+        const choice = await ctx.ui.select(`${role.label} — 选择模型提供方`, options);
+        if (choice === undefined) continue; // 用户取消，跳过该角色
+
+        if (choice.startsWith("自动")) {
+          if (role.agent) writeAgentOverride(role.agent, null);
+          else writeLeaderSpec(null);
+          report(ctx, `${role.label} → 自动（默认+fallback 链）`, "success");
+        } else {
+          const spec = choice.split("  ")[0].trim();
+          if (role.agent) writeAgentOverride(role.agent, spec);
+          else writeLeaderSpec(spec);
+          report(ctx, `${role.label} → ${spec}（重启 pi 或 /reload 后完全生效）`, "success");
+        }
+      }
+      if (!ctx.hasUI) {
+        console.log(lines.join("\n"));
+        console.log("无 UI 模式：请手工编辑 ~/.pi/agent/settings.json 的 subagents.agentOverrides 或 team.config.json");
+      }
+    },
+  });
+
+  // ---------- /team-doctor：体检 ----------
+
+  pi.registerCommand("team-doctor", {
+    description: "团队环境体检：逐角色检查模型可解析、API key 可用、agentOverrides 生效、依赖工具存在",
+    handler: async (_args, ctx) => {
+      const out: string[] = ["团队体检报告", "──────────"];
+      let allOk = true;
+
+      // 角色与模型
+      for (const role of ROLES) {
+        const override = role.agent ? currentOverride(role.agent) : resolveLeaderSpec();
+        const effective = override === AUTO ? `${role.defaultProvider}/${role.baseModelId}` : override;
+        const model = findModel(ctx, effective);
+        if (!model) {
+          allOk = false;
+          out.push(`✗ ${role.label}: 模型 ${effective} 不可解析（override=${override === AUTO ? "自动" : override}）。运行 /team-models 重新选择`);
+          continue;
+        }
+        const authOk = ctx.modelRegistry.hasConfiguredAuth(model);
+        if (!authOk) allOk = false;
+        out.push(
+          `${authOk ? "✓" : "✗"} ${role.label}: ${model.provider}/${model.id}${override !== AUTO ? "（override 生效）" : "（默认）"}${authOk ? "" : " — 无可用 API key"}`,
+        );
+      }
+
+      // 依赖工具
+      out.push("──────────");
+      const allTools = pi.getAllTools().map((t) => t.name);
+      const hasSubagent = allTools.includes("subagent");
+      const hasWeb = ["web_search", "fetch_content"].every((t) => allTools.includes(t));
+      if (hasSubagent) out.push("✓ subagent 工具（pi-subagents）可用");
+      else { allOk = false; out.push("✗ subagent 工具不可用：请 pi install npm:pi-subagents 并重启"); }
+      if (hasWeb) out.push("✓ web 工具（pi-web-access）可用");
+      else out.push("△ web 工具不可用：deep-researcher 将无法做外部调研（可 pi install npm:pi-web-access）");
+
+      // skill 发现
+      const systemPrompt = ctx.getSystemPrompt?.() ?? "";
+      const skillFound = systemPrompt.includes("team-orchestration");
+      out.push(skillFound ? "✓ team-orchestration skill 已被系统发现" : "△ team-orchestration skill 未出现在当前系统提示中（尚未激活属正常；/team 激活后生效）");
+
+      out.push("──────────");
+      out.push(allOk ? "结论：环境就绪，可运行 /team 激活协作模式" : "结论：存在 ✗ 项，请按提示修复");
+      const text = out.join("\n");
+      console.log(text);
+      if (ctx.hasUI) report(ctx, allOk ? "体检完成：环境就绪（完整报告见终端日志）" : "体检完成：存在 ✗ 项（完整报告见终端日志）", allOk ? "success" : "error");
+    },
+  });
+}
