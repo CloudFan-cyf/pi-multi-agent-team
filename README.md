@@ -43,6 +43,8 @@ pi install git:github.com/<you>/pi-multi-agent-team
 2. 检查 `subagent` 工具与 web 工具可用性
 3. 以 follow-up 形式自动加载 `team-orchestration` 编排协议 skill
 
+> 注意：模型切换使用 pi 的 `setModel`，它会同步写入全局 `defaultModel`（即 `/team` 会把 pi 默认模型改为领导者模型）。不希望长期生效时，可用 `pi -m <model>` 启动参数或 `/model` 命令改回。
+
 激活后，主会话即按编排协议工作：设计必经 challenger 审查（≤2 轮收敛）、研究问题 fan-out 给 researcher、机械任务打包给 executor 并行执行。
 
 ### `/team-models` — 模型提供方选择

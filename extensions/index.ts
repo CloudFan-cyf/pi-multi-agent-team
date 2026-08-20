@@ -48,11 +48,16 @@ function readJsonSafe(path: string): Record<string, unknown> {
   }
 }
 
-/** 读取领导者模型（team.config.json 覆盖，缺省 openai-codex/gpt-5.6-sol） */
-function resolveLeaderSpec(): string {
+/** 解析领导者模型：返回 spec 与是否为用户显式配置（team.config.json） */
+function resolveLeaderSpecInfo(): { spec: string; isOverride: boolean } {
   const cfg = readJsonSafe(TEAM_CONFIG_PATH);
   const m = cfg["leaderModel"];
-  return typeof m === "string" && m.includes("/") ? m : "openai-codex/gpt-5.6-sol";
+  if (typeof m === "string" && m.includes("/")) return { spec: m, isOverride: true };
+  return { spec: "openai-codex/gpt-5.6-sol", isOverride: false };
+}
+
+function resolveLeaderSpec(): string {
+  return resolveLeaderSpecInfo().spec;
 }
 
 /** 解析 "provider/modelId" 形式（也接受裸 id：跨 provider 唯一匹配） */
@@ -174,7 +179,9 @@ export default function (pi: ExtensionAPI) {
         }
 
         const options = [
-          `自动（默认+fallback 链）  [当前: ${currentLabel}]`,
+          role.agent
+            ? `自动（默认+fallback 链）  [当前: ${currentLabel}]`
+            : `自动（默认 openai-codex/gpt-5.6-sol）  [当前: ${currentLabel}]`,
           ...variants.map((v) =>
             `${v.spec}${ctx.modelRegistry.hasConfiguredAuth(v.model) ? "" : "  (无 API key)"}`,
           ),
@@ -210,18 +217,22 @@ export default function (pi: ExtensionAPI) {
 
       // 角色与模型
       for (const role of ROLES) {
-        const override = role.agent ? currentOverride(role.agent) : resolveLeaderSpec();
-        const effective = override === AUTO ? `${role.defaultProvider}/${role.baseModelId}` : override;
+        const override = role.agent ? currentOverride(role.agent) : null;
+        const leaderInfo = role.agent ? null : resolveLeaderSpecInfo();
+        const effective = role.agent
+          ? (override === AUTO ? `${role.defaultProvider}/${role.baseModelId}` : override)
+          : leaderInfo!.spec;
+        const isOverride = role.agent ? override !== AUTO : leaderInfo!.isOverride;
         const model = findModel(ctx, effective);
         if (!model) {
           allOk = false;
-          out.push(`✗ ${role.label}: 模型 ${effective} 不可解析（override=${override === AUTO ? "自动" : override}）。运行 /team-models 重新选择`);
+          out.push(`✗ ${role.label}: 模型 ${effective} 不可解析（override=${isOverride ? effective : "自动"}）。运行 /team-models 重新选择`);
           continue;
         }
         const authOk = ctx.modelRegistry.hasConfiguredAuth(model);
         if (!authOk) allOk = false;
         out.push(
-          `${authOk ? "✓" : "✗"} ${role.label}: ${model.provider}/${model.id}${override !== AUTO ? "（override 生效）" : "（默认）"}${authOk ? "" : " — 无可用 API key"}`,
+          `${authOk ? "✓" : "✗"} ${role.label}: ${model.provider}/${model.id}${isOverride ? "（override 生效）" : "（默认）"}${authOk ? "" : " — 无可用 API key"}`,
         );
       }
 
