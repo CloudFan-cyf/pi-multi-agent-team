@@ -53,13 +53,30 @@ pi install git:github.com/<you>/pi-multi-agent-team
 
 激活后，主会话即按编排协议工作：设计必经 challenger 审查（≤2 轮收敛）、研究问题 fan-out 给 researcher、机械任务打包给 executor 并行执行。
 
-### `/team-models` — 模型提供方选择
+### `/team-models` — 角色模型选择
 
-同一基础模型（如 `deepseek-v4-pro`）在不同机器可能经不同 provider 提供（官方 API、中转站等）。此命令为每个角色列出本机可用的 provider 变体（含 API key 状态），交互选择后：
+与 `/model` 同体验的纯列表选择：为每个角色（含领导者）依次弹出选择列表，候选 = `自动`（默认+fallback 链）→ 推荐变体（角色预设档位）→ 其余全部本机可用模型（按 provider 排序、标注 API key 状态）。选任意模型均可。
 
-- 子 agent 角色 → 写入 `~/.pi/agent/settings.json` 的 `subagents.agentOverrides.<agent>.model`（pi-subagents 原生生效，优先于包内默认）
-- 领导者 → 写入 `~/.pi/agent/team.config.json` 的 `leaderModel`
+选择后写入：
+
+- 子 agent 角色 → `~/.pi/agent/settings.json` 的 `subagents.agentOverrides.<agent>.model`（pi-subagents 原生生效，优先于包内默认）
+- 领导者 → `~/.pi/agent/team.config.json` 的 `leaderModel`
 - 选「自动」→ 清除 override，恢复包内默认 + fallback 链（deepseek → opencode-go → qwen-token-plan，仅 provider 故障时按序回退）
+
+**参数形式**（无 UI / 脚本化迁移，仅三个子 agent）：
+
+```
+/team-models <agent> <provider/model|auto>
+
+示例：
+/team-models executor opencode-go/qwen3.7-max
+/team-models challenger openai-codex/gpt-5.6-luna
+/team-models deep-researcher auto
+```
+
+spec 会对照本机可用模型校验，非法时报错并提示用 `pi --list-models` 查询。
+
+> 能力适配提醒：agent 的 system prompt 是角色契约，换任意模型后仍然成立；但 deep-researcher / challenger 角色建议配推理能力较强的模型（非推理模型的 thinking 会被 pi 自动 clamp 为 off），弱模型会明显降低研究/审查质量。
 
 ### `/team-doctor` — 环境体检
 
@@ -85,7 +102,7 @@ pi install git:github.com/<you>/pi-multi-agent-team
 
 ## 跨机器注意事项
 
-- **provider 差异**：包内默认模型绑定带 fallback 链，覆盖常见 provider 变体；非标准 provider 用 `/team-models` 显式指定（本质是写 `subagents.agentOverrides`）
+- **provider 差异**：包内默认模型绑定带 fallback 链，覆盖常见 provider 变体；非标准 provider 或想换任意模型（如给 executor 换更快的档位）用 `/team-models` 选择（本质是写 `subagents.agentOverrides`）
 - **API key**：各机器的 provider 认证在 pi 侧配置（`pi` 登录流程或 `models.json`），与包无关；`/team-doctor` 会暴露缺 key 的角色
 - **领导者模型**：若某机器的 Sol 经不同 provider 提供，改 `~/.pi/agent/team.config.json` 的 `leaderModel`（或 `/team-models` 里选）即可
 - agent override 改动后建议重启 pi（或 `/reload`）以确保 pi-subagents 重新读取

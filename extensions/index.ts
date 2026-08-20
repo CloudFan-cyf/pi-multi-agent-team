@@ -60,13 +60,19 @@ function resolveLeaderSpec(): string {
   return resolveLeaderSpecInfo().spec;
 }
 
-/** 解析 "provider/modelId" 形式（也接受裸 id：跨 provider 唯一匹配） */
+/** 剥离 provider/model[:thinking] 末尾的 thinking 后缀 */
+function stripThinking(spec: string): string {
+  return spec.replace(/:[a-z]+$/, "");
+}
+
+/** 解析 "provider/modelId[:thinking]" 形式（也接受裸 id：跨 provider 唯一匹配） */
 function findModel(ctx: ExtensionContext, spec: string) {
-  if (spec.includes("/")) {
-    const [provider, modelId] = spec.split("/");
+  const base = stripThinking(spec);
+  if (base.includes("/")) {
+    const [provider, modelId] = base.split("/");
     return ctx.modelRegistry.find(provider, modelId);
   }
-  const matches = ctx.modelRegistry.getAvailable().filter((m) => m.id === spec);
+  const matches = ctx.modelRegistry.getAvailable().filter((m) => m.id === base);
   return matches.length === 1 ? matches[0] : undefined;
 }
 
@@ -76,6 +82,14 @@ function findVariants(ctx: ExtensionContext, baseModelId: string) {
     .getAvailable()
     .filter((m) => m.id === baseModelId)
     .map((m) => ({ model: m, spec: `${m.provider}/${m.id}` }));
+}
+
+/** 全量可用模型目录（按 provider/model 排序） */
+function fullCatalog(ctx: ExtensionContext) {
+  return ctx.modelRegistry
+    .getAvailable()
+    .map((m) => ({ model: m, spec: `${m.provider}/${m.id}` }))
+    .sort((a, b) => a.spec.localeCompare(b.spec));
 }
 
 /** 当前生效的 override（agentOverrides 里配置的 model），无则返回 AUTO */
@@ -159,34 +173,70 @@ export default function (pi: ExtensionAPI) {
     },
   });
 
-  // ---------- /team-models：角色模型提供方选择 ----------
+  // ---------- /team-models：角色模型选择 ----------
 
   pi.registerCommand("team-models", {
-    description: "为团队各角色（领导者/研究员/挑战者/执行者）选择本机可用的模型提供方；选「自动」恢复包内默认+fallback 链",
-    handler: async (_args, ctx) => {
+    description: "为团队各角色（领导者/研究员/挑战者/执行者）选择本机可用的任意模型；也可用参数形式 /team-models <agent> <provider/model|auto>；选「自动」恢复包内默认+fallback 链",
+    handler: async (args, ctx) => {
+      // ---- 参数形式：/team-models <agent> <spec|auto> ----
+      const argParts = (args ?? "").trim().split(/\s+/).filter(Boolean);
+      if (argParts.length >= 2) {
+        const [agentName, specArg] = argParts;
+        const role = ROLES.find((r) => r.agent === agentName);
+        if (!role?.agent) {
+          report(
+            ctx,
+            `未知 agent「${agentName}」。可用：${ROLES.filter((r) => r.agent).map((r) => r.agent).join(", ")}`,
+            "error",
+          );
+          return;
+        }
+        if (/^auto$/i.test(specArg)) {
+          writeAgentOverride(role.agent, null);
+          report(ctx, `${role.label} → 自动（默认+fallback 链）`, "success");
+          return;
+        }
+        const spec = stripThinking(specArg);
+        const model = findModel(ctx, spec);
+        if (!model) {
+          report(ctx, `模型 ${specArg} 不可用。运行 pi --list-models 查看可用模型，或 /team-models（无参数）交互选择`, "error");
+          return;
+        }
+        writeAgentOverride(role.agent, spec);
+        const authNote = ctx.modelRegistry.hasConfiguredAuth(model) ? "" : "（注意：无 API key）";
+        report(ctx, `${role.label} → ${spec}${authNote}（重启 pi 或 /reload 后生效）`, "success");
+        return;
+      }
+
+      // ---- 交互 / 打印形式 ----
+      const catalog = fullCatalog(ctx);
       const lines: string[] = [];
       for (const role of ROLES) {
         const variants = findVariants(ctx, role.baseModelId);
         const current = role.agent ? currentOverride(role.agent) : resolveLeaderSpec();
-        const currentLabel =
-          current === AUTO ? "自动（默认+fallback 链）" : current;
+        const currentLabel = current === AUTO ? "自动（默认+fallback 链）" : current;
 
         if (!ctx.hasUI) {
-          lines.push(
-            `${role.label}: 当前=${currentLabel}；可用=${variants.map((v) => v.spec).join(", ") || "无"}`,
-          );
+          lines.push(`${role.label}: 当前=${currentLabel}`);
+          lines.push(`  可用模型: ${catalog.map((v) => v.spec).join(", ") || "无"}`);
           continue;
         }
 
+        // 候选：自动 → 推荐变体（角色基础模型）→ 其余全部可用模型
+        const recSpecs = new Set(variants.map((v) => v.spec));
+        const others = catalog.filter((v) => !recSpecs.has(v.spec));
         const options = [
           role.agent
             ? `自动（默认+fallback 链）  [当前: ${currentLabel}]`
             : `自动（默认 openai-codex/gpt-5.6-sol）  [当前: ${currentLabel}]`,
           ...variants.map((v) =>
+            `${v.spec}  推荐${ctx.modelRegistry.hasConfiguredAuth(v.model) ? "" : "  (无 API key)"}`,
+          ),
+          ...others.map((v) =>
             `${v.spec}${ctx.modelRegistry.hasConfiguredAuth(v.model) ? "" : "  (无 API key)"}`,
           ),
         ];
-        const choice = await ctx.ui.select(`${role.label} — 选择模型提供方`, options);
+        const choice = await ctx.ui.select(`${role.label} — 选择模型`, options);
         if (choice === undefined) continue; // 用户取消，跳过该角色
 
         if (choice.startsWith("自动")) {
@@ -194,7 +244,7 @@ export default function (pi: ExtensionAPI) {
           else writeLeaderSpec(null);
           report(ctx, `${role.label} → 自动（默认+fallback 链）`, "success");
         } else {
-          const spec = choice.split("  ")[0].trim();
+          const spec = stripThinking(choice.split("  ")[0].trim());
           if (role.agent) writeAgentOverride(role.agent, spec);
           else writeLeaderSpec(spec);
           report(ctx, `${role.label} → ${spec}（重启 pi 或 /reload 后完全生效）`, "success");
@@ -202,7 +252,7 @@ export default function (pi: ExtensionAPI) {
       }
       if (!ctx.hasUI) {
         console.log(lines.join("\n"));
-        console.log("无 UI 模式：请手工编辑 ~/.pi/agent/settings.json 的 subagents.agentOverrides 或 team.config.json");
+        console.log("无 UI 模式：用参数形式 /team-models <agent> <provider/model|auto> 直接设置");
       }
     },
   });

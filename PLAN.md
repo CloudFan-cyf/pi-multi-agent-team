@@ -171,20 +171,38 @@ Frontmatter：`name: team-orchestration`，`description` 明确「/team 激活�
 
 > 注：计划批准后先保存并暂停，等待用户切换到合适的模型再开始实现。
 
-- [ ] **Step 0**：批准后保存计划，暂停等待用户切换模型
-- [ ] **Step 1**：初始化 repo：`git init`、`package.json`（pi manifest）、目录骨架
-- [ ] **Step 2**：编写三个 agent 定义（agents/*.md，中文 system prompt，frontmatter 按 above 设计）
-- [ ] **Step 3**：编写 `skills/team-orchestration/SKILL.md` + `references/task-packets.md` + `references/workflows.md`
-- [ ] **Step 4**：编写 `extensions/index.ts`（/team、/team-doctor 命令，模型解析与切换，体检逻辑）
-- [ ] **Step 5**：编写 README.md（安装、迁移、跨机器模型修正说明）
-- [ ] **Step 6**：本地安装验证（`pi install <本地路径>`），推送到私有 GitHub repo
-- [ ] **Step 7**：端到端演练（见 Verification）
+- [x] **Step 0**：批准后保存计划，暂停等待用户切换模型 ✓
+- [x] **Step 1**：初始化 repo：`git init`、`package.json`（pi manifest）、目录骨架 ✓
+- [x] **Step 2**：编写三个 agent 定义（agents/*.md，中文 system prompt，frontmatter 按 above 设计） ✓
+- [x] **Step 3**：编写 `skills/team-orchestration/SKILL.md` + `references/task-packets.md` + `references/workflows.md` ✓
+- [x] **Step 4**：编写 `extensions/index.ts`（/team、/team-doctor 命令，模型解析与切换，体检逻辑） ✓
+- [x] **Step 5**：编写 README.md（安装、迁移、跨机器模型修正说明） ✓
+- [x] **Step 6**：本地安装验证（`pi install <本地路径>`），推送到私有 GitHub repo ✓（repo: CloudFan-cyf/pi-multi-agent-team）
+- [ ] **Step 7**：允许用户为三个 agent 指定任意 pi 可用模型（详细设计见下「Step 7 详细设计」）：扩展 `/team-models` 候选范围 + 参数形式，验证后 commit + push
+- [ ] **Step 8**：端到端演练（见 Verification）——暂停：等待 GPT5.6 Sol 可用后执行
+
+### Step 7 详细设计：任意模型指定
+
+需求：允许用户为三个子 agent（deep-researcher / challenger / executor）任意指定 pi 可用的模型名和 provider，不再局限于角色基础模型 id 的 provider 变体（例如 challenger 用 `openai-codex/gpt-5.6-luna`、executor 用 `opencode-go/qwen3.7-max`）。领导者 `leaderModel`（team.config.json）本就接受任意 spec，无需改动。
+
+变更点（均在 `extensions/index.ts` 的 `/team-models` 命令）：
+
+1. **交互模式候选列表**（TUI）：与 `/model` 命令同体验的纯列表选择，不引入自由输入。每个角色的 `ctx.ui.select` 候选改为：
+   - `自动（默认+fallback 链）`
+   - 基础模型变体（排最前，标注「推荐」——按角色定位预设的档位）
+   - 其余全部 `getAvailable()` 模型（按 provider 分组排序，格式 `provider/model  (无 API key)` 标注 auth 状态）
+   全量选择基于 `ctx.modelRegistry.getAvailable()`，列表项数在本机约 40+，`ctx.ui.select` 可直接支持
+2. **选择后写入**：仍写 `subagents.agentOverrides.<agent>.model`，复用现有 `writeAgentOverride()` / `currentOverride()`，零新机制；选「自动」清除 override
+3. **参数形式**（无 UI / 脚本化迁移）：`/team-models <agent> <spec|auto>` 直接设置，如 `/team-models executor opencode-go/qwen3.7-max`、`/team-models challenger openai-codex/gpt-5.6-luna`；spec 用 `findModel()` 校验（仅列表合法项，含 `:thinking` 后缀剥离）；参数不合法时报错并列出可用 agent 名
+4. **`/team-doctor` 适配**：解析展示时剥离 `:thinking` 后缀再 findModel（其余逻辑已天然支持任意 spec）
+
+验证：jiti 加载测试；`pi -p '/team-models executor opencode-go/qwen3.7-max'` 写入 override、`auto` 清除、非法 spec 报错；`/team-doctor` 正确显示 override；`subagent {action:"list"}` 反映新模型；`pi -p '/team-models'`（无 UI 无参数）打印当前值 + 全量可用模型清单。README 同步更新命令文档。能力适配提醒：agent 的 system prompt 是角色契约，换任意模型后仍成立；但 researcher/challenger 角色建议配推理较强的模型（非推理模型 thinking 会被 pi clamp 为 off），弱模型会降低研究/审查质量。
 
 ## Verification
 
 1. **安装与发现**：`pi install <repo>` 后启动 pi；`subagent({action:"list"})` 应列出 `deep-researcher`/`challenger`/`executor` 三个 agent 且带模型信息
 2. **/team 命令**：执行后主会话模型切到 `openai-codex/gpt-5.6-sol`，follow-up 自动加载 team-orchestration skill；缺 pi-subagents 时给出正确提示（可用 `-e` 临时禁用扩展模拟）
-3. **/team-models**：交互列表正确展示各角色在本机可用的提供方变体；选择后 `subagent({action:"list"})` 反映 override；选「自动」能清除 override
+3. **/team-models**：交互列表正确展示各角色在本机可用的提供方变体；选择后 `subagent({action:"list"})` 反映 override；选「自动」能清除 override；**任意模型指定**：`/team-models <agent> <spec>` 参数形式写入任意 provider/model，`/team-doctor` 正确显示
 3. **/team-doctor**：模型/agent/工具逐项体检输出
 4. **端到端功能流**（在 scratch 项目中给一个真实功能需求）：
    - 验证领导者做了澄清和设计而非亲自写码
