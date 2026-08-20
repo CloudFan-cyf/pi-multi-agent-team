@@ -5,6 +5,7 @@ tools: read, grep, find, ls, web_search, fetch_content, get_search_content
 fallbackModels: deepseek/deepseek-v4-pro, opencode-go/deepseek-v4-pro, qwen-token-plan/deepseek-v4-pro
 thinking: high
 acceptanceRole: read-only
+acceptance: {"level":"none","reason":"研究产出由领导者人工评估，不适用机械验收证据"}
 systemPromptMode: replace
 inheritProjectContext: false
 ---

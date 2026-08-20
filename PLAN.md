@@ -179,7 +179,17 @@ Frontmatter：`name: team-orchestration`，`description` 明确「/team 激活�
 - [x] **Step 5**：编写 README.md（安装、迁移、跨机器模型修正说明） ✓
 - [x] **Step 6**：本地安装验证（`pi install <本地路径>`），推送到私有 GitHub repo ✓（repo: CloudFan-cyf/pi-multi-agent-team）
 - [x] **Step 7**：允许用户为三个 agent 指定任意 pi 可用模型（详细设计见下「Step 7 详细设计」）：扩展 `/team-models` 候选范围 + 参数形式，验证后 commit + push ✓（实现中发现并解决：pi-subagents 的 agentOverrides.model 仅在 frontmatter 未声明 model 时生效，已改为 frontmatter 去 model + 默认档位物化为 override）
-- [ ] **Step 8**：端到端演练（见 Verification）——暂停：等待 GPT5.6 Sol 可用后执行
+- [x] **Step 8**：端到端演练（见 Verification）✓ 完成于 2026-08-21，结果记录见下
+
+#### Step 8 演练结果（scratch 项目 /tmp/team-e2e，需求：Python 密码生成器 CLI）
+
+- **领导者（Sol）**：完成设计、假设记录、challenge 裁决与收敛、验收（亲自复跑 56 项测试）；未亲自写码 ✓
+- **deep-researcher**：产出带 6 个权威来源的研究简报（NIST SP 800-63-4、zxcvbn、USENIX 论文），实际运行 deepseek/deepseek-v4-pro:high（指定 opencode-go 但中转请求超时，fallback 链兜底——预期容错行为）✓
+- **challenger**：2 轮收敛（第 1 轮条件不通过→修订；第 2 轮条件通过→定稿），实际模型同上 ✓
+- **executor**：实际运行 deepseek/deepseek-v4-flash，产出 passgen.py + 56 项 pytest（领导者独立复跑全绿）+ README ✓
+- **上下文经济**：子 agent 产出均为结构化简报/清单（非对话转储）；input artifacts 被 Prompt Audit 脱敏无法直接检查，以行为证据为准 ✓
+- **发现并修复**：只读角色（researcher/challenger）被误推断 acceptance 要求 commands-run 证据导致验收误报 rejected → 已在 frontmatter 显式声明 acceptance none
+- **git 副本同步**：演练后修复已 commit+push
 
 ### Step 7 详细设计：任意模型指定
 
