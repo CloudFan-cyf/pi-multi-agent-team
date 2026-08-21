@@ -2,7 +2,7 @@
  * pi-multi-agent-team — 多 Agent 协作团队激活与管理命令
  *
  * /team         激活协作模式：切换主会话到领导者模型并加载编排协议 skill
- * /team-models  为每个角色选择本机可用的模型提供方（写入 agentOverrides）
+ * /team-models  为每个角色（含 reviewer）选择本机可用的模型提供方（写入 agentOverrides）
  * /team-doctor  迁移/环境体检：模型、agent、工具逐项检查
  *
  * 依赖：pi-subagents（subagent 工具与 agent 定义加载）。
@@ -34,6 +34,7 @@ const ROLES: RoleDef[] = [
   { label: "深度研究员 deep-researcher", agent: "deep-researcher", baseModelId: "deepseek-v4-pro", defaultProvider: "deepseek" },
   { label: "设计挑战者 challenger", agent: "challenger", baseModelId: "deepseek-v4-pro", defaultProvider: "deepseek" },
   { label: "执行者 executor", agent: "executor", baseModelId: "deepseek-v4-flash", defaultProvider: "deepseek" },
+  { label: "代码评审员 reviewer", agent: "reviewer", baseModelId: "deepseek-v4-flash", defaultProvider: "deepseek" },
 ];
 
 const AUTO = "__auto__";

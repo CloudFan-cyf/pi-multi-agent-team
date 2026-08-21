@@ -8,8 +8,9 @@
 | 深度研究员 | DeepSeek V4 Pro | 多源调研，产出带来源的研究简报 |
 | 设计挑战者（红队） | DeepSeek V4 Pro | 对领导者设计方案做对抗性审查，输出分级 findings |
 | 执行者 | DeepSeek V4 Flash | 严格按任务包执行机械任务并自行验证 |
+| 代码评审员 | DeepSeek V4 Flash | 对执行者产出做只读评审（分级 findings + verdict），每次执行后的强制评审门 |
 
-架构：领导者即主会话（用户以 Sol 直接对话，无二跳转发）；三个子 agent 由 [pi-subagents](https://github.com/nicobailon/pi-subagents) 负责实际 spawn、上下文隔离与编排执行；本包提供角色定义（`agents/`）、编排协议（`skills/team-orchestration/`）与激活/管理命令（`extensions/index.ts`）。
+架构：领导者即主会话（用户以 Sol 直接对话，无二跳转发）；四个子 agent 由 [pi-subagents](https://github.com/nicobailon/pi-subagents) 负责实际 spawn、上下文隔离与编排执行；本包提供角色定义（`agents/`）、编排协议（`skills/team-orchestration/`）与激活/管理命令（`extensions/index.ts`）。
 
 ## 前置依赖
 
@@ -51,7 +52,7 @@ pi install git:github.com/<you>/pi-multi-agent-team
 
 > 注意：模型切换使用 pi 的 `setModel`，它会同步写入全局 `defaultModel`（即 `/team` 会把 pi 默认模型改为领导者模型）。不希望长期生效时，可用 `pi -m <model>` 启动参数或 `/model` 命令改回。
 
-激活后，主会话即按编排协议工作：设计必经 challenger 审查（≤2 轮收敛）、研究问题 fan-out 给 researcher、机械任务打包给 executor 并行执行。
+激活后，主会话即按编排协议工作：设计必经 challenger 审查（≤2 轮收敛）、研究问题 fan-out 给 researcher、独立域任务包并行派给 executor（runs.all）、每个执行后必经 reviewer 评审门（执行汇报与评审报告一起呈交领导者）。
 
 ### `/team-models` — 角色模型选择
 
@@ -89,13 +90,14 @@ spec 会对照本机可用模型校验，非法时报错并提示用 `pi --list-
 ├── agents/                      # pi-subagents 角色定义
 │   ├── deep-researcher.md       #   深度研究员（只读+web）
 │   ├── challenger.md            #   设计挑战者（只读红队）
-│   └── executor.md              #   执行者（写手）
+│   ├── executor.md              #   执行者（写手）
+│   └── reviewer.md              #   代码评审员（只读评审，强制评审门）
 ├── skills/
 │   └── team-orchestration/
-│       ├── SKILL.md             # 编排协议：路由/流程/上下文经济/升级规则
+│       ├── SKILL.md             # 编排协议：路由/流程/评审门/并行纪律/升级规则
 │       └── references/
-│           ├── task-packets.md  # 任务包构造规范（上下文蒸馏）
-│           └── workflows.md     # workflowScript 编排配方
+│           ├── task-packets.md  # 任务包构造规范（含评审任务包）
+│           └── workflows.md     # workflowScript 编排配方（含执行+评审门）
 ├── extensions/
 │   └── index.ts                 # /team /team-models /team-doctor
 └── package.json                 # pi manifest
