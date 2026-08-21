@@ -26,7 +26,7 @@ pi install npm:pi-subagents
 pi install npm:pi-web-access
 
 # 2. 本包（私有 git repo）
-pi install git:github.com/<you>/pi-multi-agent-team
+pi install git:github.com/CloudFan-cyf/pi-multi-agent-team
 
 # 3. 体检 + 选择本机模型提供方
 #    在 pi 中运行：
