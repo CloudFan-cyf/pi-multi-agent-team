@@ -222,6 +222,14 @@ Frontmatter：`name: team-orchestration`，`description` 明确「/team 激活�
 5. **上下文经济**：检查任务包不含整段对话转储；主会话 token 消耗对比不启用协作时的合理下降
 6. **迁移模拟**：删除本地安装，从 git repo 重新 `pi install`，重复 1–2 验证
 
+#### 变更记录：新增 reviewer + 并行派发强化（2026-08-21）
+
+- 新增 `agents/reviewer.md`（轻量模型只读评审，参考 superpowers requesting/receiving-code-review）
+- 编排协议新增**强制评审门**：每个 executor 任务包完成后必经 reviewer，执行汇报与评审报告一起呈交领导者；修复闭环直到 verdict 通过
+- 新增并行派发纪律（独立域判断/自包含任务包/返回后整合三步，参考 superpowers dispatching-parallel-agents）；workflows.md 新增「执行+评审门」单任务与并行两版配方
+- task-packets.md 新增「评审任务包」构造规范；SKILL.md 新增「接收评审纪律」（核验不盲从）
+- 验证：doctor 覆盖 reviewer（默认档位物化）、4 个 package agent 全部发现、真实 executor→reviewer 冒烟通过（reviewer 实际运行 deepseek-v4-flash，acceptance not-required，分级 findings + verdict 正确，正确识别任务包层面问题）
+
 ## 风险与备注
 
 - `fallbackModels` 只在 provider 故障（无 key/配额/超时）时触发；用户想主动选提供方（如成本考虑强制走中转）时用 `/team-models` 显式指定，写入 agentOverrides——README 已覆盖
