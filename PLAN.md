@@ -231,6 +231,13 @@ Frontmatter：`name: team-orchestration`，`description` 明确「/team 激活�
 - task-packets.md 新增「评审任务包」构造规范；SKILL.md 新增「接收评审纪律」（核验不盲从）
 - 验证：doctor 覆盖 reviewer（默认档位物化）、4 个 package agent 全部发现、真实 executor→reviewer 冒烟通过（reviewer 实际运行 deepseek-v4-flash，acceptance not-required，分级 findings + verdict 正确，正确识别任务包层面问题）
 
+#### 变更记录：fallback 链可配置 + 两级导航（2026-08-21，Step 9）
+
+- **fallback 可配置**：4 个 agent frontmatter 移除 `fallbackModels`（与 Step 7 的 model 同理：pi-subagents 的 override 仅在 frontmatter 未声明时生效）；`RoleDef` 增 `defaultFallback`；`ensureDefaultsMaterialized` 兼物化 `model` + `fallbackModels` 两个 override 字段；新增 `/team-fallback` 命令（设整链 / default / clear / show + 交互快捷操作）
+- **两级导航**：`/team-models` 交互改为「默认档位 / 按 provider 选模型」→ 选 provider → 选该 provider 下模型（每层 3–10 项），解决 40+ 模型扁平列表溢出终端/浏览器视口问题；无 UI 模式按 provider 分组打印
+- **doctor 增强**：逐角色显示当前 fallback 链
+- **验证**：清空 overrides 后 doctor 物化两字段正确；`/team-fallback` 设/重置/清除/显示/非法报错全部通过；自定义链正确反映到 settings 与 doctor
+
 ## 风险与备注
 
 ### Step 9 详细设计：fallback 链可配置 + 两级导航
@@ -279,13 +286,13 @@ Step 3：ctx.ui.select("选择模型 (deepseek)", [
 
 #### Steps
 
-- [ ] 9a：4 个 agent frontmatter 移除 fallbackModels
-- [ ] 9b：扩展 RoleDef + ROLES defaultFallback；ensureDefaultsMaterialized 兼写 model+fallbackModels；read/write fallback override 辅助函数
-- [ ] 9c：新增 `/team-fallback` 命令（参数 + 交互）
-- [ ] 9d：`/team-models` 改两级导航（provider→model）+ 无 UI 分组打印
-- [ ] 9e：`/team-doctor` 增显 fallback 链
-- [ ] 9f：README 更新
-- [ ] 9g：验证（doctor 物化两字段 / fallback 参数形式设/重置/清除 / 模型两级导航真实选一个轻量模型 / 真实 spawn 复核）/ commit+push+同步副本
+- [x] 9a：4 个 agent frontmatter 移除 fallbackModels
+- [x] 9b：扩展 RoleDef + ROLES defaultFallback；ensureDefaultsMaterialized 兼写 model+fallbackModels；read/write fallback override 辅助函数
+- [x] 9c：新增 `/team-fallback` 命令（参数 + 交互）
+- [x] 9d：`/team-models` 改两级导航（provider→model）+ 无 UI 分组打印
+- [x] 9e：`/team-doctor` 增显 fallback 链
+- [x] 9f：README 更新
+- [x] 9g：验证（doctor 物化两字段 / fallback 参数形式设/重置/清除 / 模型两级导航真实选一个轻量模型 / 真实 spawn 复核）/ commit+push+同步副本
 
 #### Verification
 

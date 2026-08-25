@@ -56,7 +56,7 @@ pi install git:github.com/CloudFan-cyf/pi-multi-agent-team
 
 ### `/team-models` — 角色模型选择
 
-与 `/model` 同体验的纯列表选择：为每个角色（含领导者）依次弹出选择列表，候选 = `默认档位`（角色预设模型 + fallback 链）→ 推荐变体 → 其余全部本机可用模型（按 provider 排序、标注 API key 状态）。选任意模型均可。
+两级导航（避免长列表溢出终端/浏览器视口）：每个角色先选「默认档位」或「按 provider 选模型」；选后者则先选 provider（如 deepseek/opencode-go/...，每层仅数项），再选该 provider 下的模型（每层仅 3–10 项），不再一次列出全部 40+ 模型。
 
 选择后写入：
 
@@ -77,6 +77,24 @@ pi install git:github.com/CloudFan-cyf/pi-multi-agent-team
 ```
 
 spec 会对照本机可用模型校验，非法时报错并提示用 `pi --list-models` 查询。`default` = 写回角色预设档位。
+
+### `/team-fallback` — fallback 链管理
+
+子 agent 的 fallback 链（provider 故障时按序回退）现在可由用户配置（包内 frontmatter 不再写死，默认链由包物化为 override）。
+
+**参数形式**（主）：
+
+```
+/team-fallback <agent> <spec1> [spec2] [spec3]...   # 设整链（按序回退）
+/team-fallback <agent> default                       # 重置为包默认链
+/team-fallback <agent> clear                         # 清除（无 fallback）
+/team-fallback <agent> show                          # 显示当前链
+
+示例：
+/team-fallback executor opencode-go/deepseek-v4-flash qwen-token-plan/deepseek-v4-flash
+```
+
+每个 spec 对照本机可用模型校验，非法时报错。**交互形式**（无参数）逐角色提供：保留当前 / 重置为默认 / 清除 fallback；列表增删重排交给参数形式。`/team-doctor` 会显示每个角色的当前 fallback 链便于核对。
 
 > 能力适配提醒：agent 的 system prompt 是角色契约，换任意模型后仍然成立；但 deep-researcher / challenger 角色建议配推理能力较强的模型（非推理模型的 thinking 会被 pi 自动 clamp 为 off），弱模型会明显降低研究/审查质量。
 
@@ -99,7 +117,7 @@ spec 会对照本机可用模型校验，非法时报错并提示用 `pi --list-
 │           ├── task-packets.md  # 任务包构造规范（含评审任务包）
 │           └── workflows.md     # workflowScript 编排配方（含执行+评审门）
 ├── extensions/
-│   └── index.ts                 # /team /team-models /team-doctor
+│   └── index.ts                 # /team /team-models /team-fallback /team-doctor
 └── package.json                 # pi manifest
 ```
 
