@@ -131,3 +131,7 @@ spec 会对照本机可用模型校验，非法时报错并提示用 `pi --list-
 ## 安全说明
 
 本包不含可执行安装脚本；扩展代码仅做模型切换、settings JSON 合并与命令注册。子 agent 的实际权限由 pi-subagents 的工具白名单控制（researcher/challenger 为只读，executor 为正常内置工具集）。
+
+## License
+
+[MIT](./LICENSE)
