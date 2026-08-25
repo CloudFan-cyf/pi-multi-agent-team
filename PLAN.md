@@ -180,6 +180,7 @@ Frontmatter：`name: team-orchestration`，`description` 明确「/team 激活�
 - [x] **Step 6**：本地安装验证（`pi install <本地路径>`），推送到私有 GitHub repo ✓（repo: CloudFan-cyf/pi-multi-agent-team）
 - [x] **Step 7**：允许用户为三个 agent 指定任意 pi 可用模型（详细设计见下「Step 7 详细设计」）：扩展 `/team-models` 候选范围 + 参数形式，验证后 commit + push ✓（实现中发现并解决：pi-subagents 的 agentOverrides.model 仅在 frontmatter 未声明 model 时生效，已改为 frontmatter 去 model + 默认档位物化为 override）
 - [x] **Step 8**：端到端演练（见 Verification）✓ 完成于 2026-08-21，结果记录见下
+- [ ] **Step 9**：fallback 链可配置化 + `/team-models` 两级导航优化（详细设计见下「Step 9 详细设计」）
 
 #### Step 8 演练结果（scratch 项目 /tmp/team-e2e，需求：Python 密码生成器 CLI）
 
@@ -231,6 +232,68 @@ Frontmatter：`name: team-orchestration`，`description` 明确「/team 激活�
 - 验证：doctor 覆盖 reviewer（默认档位物化）、4 个 package agent 全部发现、真实 executor→reviewer 冒烟通过（reviewer 实际运行 deepseek-v4-flash，acceptance not-required，分级 findings + verdict 正确，正确识别任务包层面问题）
 
 ## 风险与备注
+
+### Step 9 详细设计：fallback 链可配置 + 两级导航
+
+#### 问题 1：fallback 链硬编码
+
+现状：4 个 agent frontmatter 各自写死 `fallbackModels: deepseek/..., opencode-go/..., qwen-token-plan/...`。与当初 `model` 同样，pi-subagents 的 `applyCustomAgentOverride` 对 `fallbackModels` 的 override **仅在 frontmatter 未声明该字段时生效**（`fill()` 检查 `agentHasFrontmatterField`）。因此用户无法通过 override 调整 fallback 链。
+
+方案（与 Step 7 处理 `model` 完全同构）：
+1. 4 个 agent frontmatter **移除 `fallbackModels:` 行**
+2. 扩展 `RoleDef` 增加 `defaultFallback: string[]`；ROLES 各角色填入默认链（deepseek → opencode-go → qwen-token-plan 对应档位）
+3. `ensureDefaultsMaterialized()` 同时物化 `model` 与 `fallbackModels` 两个 override 字段（override 值为数组）
+4. 新增 `/team-fallback` 命令管理 fallback 链：
+   - **参数形式**（主，列表操作更适合）：`/team-fallback <agent> <spec1> [spec2] [spec3]...` 设整链；`/team-fallback <agent> default` 重置；`/team-fallback <agent> clear` 清除（无 fallback）；`/team-fallback <agent> show` 显示
+   - **交互形式**：逐角色 `ctx.ui.select`：[保留当前链 / 重置为默认 / 清除 fallback / 用参数形式自定义（显示当前链与命令示例）]——列表编辑（增删/重排）在单选 UI 下体验差，参数形式更合适，交互仅提供常用快捷操作
+   - `parseBuiltinOverrideEntry` 的 `fallbackModels` 接受 string 数组或 false（已验证），写入 `agentOverrides.<agent>.fallbackModels`
+
+#### 问题 2：`/team-models` 列表过长（终端跳底/浏览器只见中段）
+
+现状：`ctx.ui.select(title, [全部模型扁平列表])`，本机 40+ 模型，超出终端与 pi-web 视口。
+
+方案：**两级导航（provider → 该 provider 下的模型）**，每层列表都短（providers ~4-8 项，每 provider 模型 ~3-10 项）：
+
+```
+Step 1（逐角色）：ctx.ui.select("选择方式", [
+  `默认档位 ${defaultSpec}（+fallback 链）  [当前: ${current}]`,
+  "按 provider 选模型…",
+])
+Step 2（选了“按 provider”）：ctx.ui.select("选择 provider", [
+  "deepseek (3 个模型)", "opencode-go (5 个模型)", ...
+])
+Step 3：ctx.ui.select("选择模型 (deepseek)", [
+  "deepseek/deepseek-v4-flash", "deepseek/deepseek-v4-pro", ...
+])
+```
+
+- 新增 `catalogByProvider(ctx)` 返回 `Map<provider, Model[]>`；Step 3 列表仅含所选 provider 的模型，每项标注 API key 状态，基础模型对应项加「推荐」标记
+- 无 UI（print）模式：按 provider 分组打印（不再是扁平一行）
+- `/team-doctor` 增显示当前 fallback 链（便于用户核对配置）
+
+#### Files to modify
+
+- `agents/{deep-researcher,challenger,executor,reviewer}.md`：删 `fallbackModels:` 行
+- `extensions/index.ts`：RoleDef + defaultFallback；ensureDefaultsMaterialized 兼写两个字段；新增 `writeAgentFallbackOverride` / `currentFallback`；`catalogByProvider`；`/team-models` 改两级导航；新增 `/team-fallback` 命令；`/team-doctor` 显示 fallback 链
+- `README.md`：文档化 `/team-fallback` 与两级导航
+
+#### Steps
+
+- [ ] 9a：4 个 agent frontmatter 移除 fallbackModels
+- [ ] 9b：扩展 RoleDef + ROLES defaultFallback；ensureDefaultsMaterialized 兼写 model+fallbackModels；read/write fallback override 辅助函数
+- [ ] 9c：新增 `/team-fallback` 命令（参数 + 交互）
+- [ ] 9d：`/team-models` 改两级导航（provider→model）+ 无 UI 分组打印
+- [ ] 9e：`/team-doctor` 增显 fallback 链
+- [ ] 9f：README 更新
+- [ ] 9g：验证（doctor 物化两字段 / fallback 参数形式设/重置/清除 / 模型两级导航真实选一个轻量模型 / 真实 spawn 复核）/ commit+push+同步副本
+
+#### Verification
+
+1. jiti 加载测试
+2. `pi -p '/team-doctor'`：4 角色 model 与 fallback 链均显示，默认链物化到 settings
+3. `pi -p '/team-fallback executor default'` / `clear` / `show` / `opencode-go/deepseek-v4-flash qwen-token-plan/deepseek-v4-flash` 参数形式均生效，doctor 反映变化
+4. 交互两级导航：无 UI 打印分组；真实 `ctx.ui.select` 两级流程（代码走查 + 无 UI 路径输出验证）
+5. 真实 spawn 冒烟：故意把 executor 主模型设为本机不存在的 provider 触发 fallback，核对 attemptedModels 走 fallback 链（或用 Step 8 验证过的 opencode-go 超时场景）
 
 - `fallbackModels` 只在 provider 故障（无 key/配额/超时）时触发；用户想主动选提供方（如成本考虑强制走中转）时用 `/team-models` 显式指定，写入 agentOverrides——README 已覆盖
 - 各 agent 的 system prompt 中同样写入该角色的「做/不做」契约（与 SKILL.md 中表格一致），确保子 agent 侧也受约束

@@ -2,8 +2,9 @@
  * pi-multi-agent-team — 多 Agent 协作团队激活与管理命令
  *
  * /team         激活协作模式：切换主会话到领导者模型并加载编排协议 skill
- * /team-models  为每个角色（含 reviewer）选择本机可用的模型提供方（写入 agentOverrides）
- * /team-doctor  迁移/环境体检：模型、agent、工具逐项检查
+ * /team-models  为每个角色（含 reviewer）选择本机可用的模型（两级导航 provider→model）；也可参数形式
+ * /team-fallback 管理子 agent 的 fallback 链（设整链/重置/清除/显示）
+ * /team-doctor  迁移/环境体检：模型、fallback 链、agent、工具逐项检查
  *
  * 依赖：pi-subagents（subagent 工具与 agent 定义加载）。
  * 角色定义见本包 agents/ 目录，编排协议见 skills/team-orchestration/。
@@ -27,14 +28,16 @@ interface RoleDef {
   baseModelId: string;
   /** 默认 provider */
   defaultProvider: string;
+  /** 默认 fallback 链（provider 故障时按序回退） */
+  defaultFallback: string[];
 }
 
 const ROLES: RoleDef[] = [
-  { label: "领导者 Leader（主会话）", baseModelId: "gpt-5.6-sol", defaultProvider: "openai-codex" },
-  { label: "深度研究员 deep-researcher", agent: "deep-researcher", baseModelId: "deepseek-v4-pro", defaultProvider: "deepseek" },
-  { label: "设计挑战者 challenger", agent: "challenger", baseModelId: "deepseek-v4-pro", defaultProvider: "deepseek" },
-  { label: "执行者 executor", agent: "executor", baseModelId: "deepseek-v4-flash", defaultProvider: "deepseek" },
-  { label: "代码评审员 reviewer", agent: "reviewer", baseModelId: "deepseek-v4-flash", defaultProvider: "deepseek" },
+  { label: "领导者 Leader（主会话）", baseModelId: "gpt-5.6-sol", defaultProvider: "openai-codex", defaultFallback: [] },
+  { label: "深度研究员 deep-researcher", agent: "deep-researcher", baseModelId: "deepseek-v4-pro", defaultProvider: "deepseek", defaultFallback: ["opencode-go/deepseek-v4-pro", "qwen-token-plan/deepseek-v4-pro"] },
+  { label: "设计挑战者 challenger", agent: "challenger", baseModelId: "deepseek-v4-pro", defaultProvider: "deepseek", defaultFallback: ["opencode-go/deepseek-v4-pro", "qwen-token-plan/deepseek-v4-pro"] },
+  { label: "执行者 executor", agent: "executor", baseModelId: "deepseek-v4-flash", defaultProvider: "deepseek", defaultFallback: ["opencode-go/deepseek-v4-flash", "qwen-token-plan/deepseek-v4-flash"] },
+  { label: "代码评审员 reviewer", agent: "reviewer", baseModelId: "deepseek-v4-flash", defaultProvider: "deepseek", defaultFallback: ["opencode-go/deepseek-v4-flash", "qwen-token-plan/deepseek-v4-flash"] },
 ];
 
 const AUTO = "__auto__";
@@ -93,22 +96,37 @@ function fullCatalog(ctx: ExtensionContext) {
     .sort((a, b) => a.spec.localeCompare(b.spec));
 }
 
+/** 按 provider 分组的可用模型目录（用于两级导航） */
+function catalogByProvider(ctx: ExtensionContext) {
+  const map = new Map<string, ReturnType<ExtensionContext["modelRegistry"]["getAvailable"]>>();
+  for (const m of ctx.modelRegistry.getAvailable()) {
+    const arr = map.get(m.provider) ?? [];
+    arr.push(m);
+    map.set(m.provider, arr);
+  }
+  for (const arr of map.values()) arr.sort((a, b) => a.id.localeCompare(b.id));
+  return map;
+}
+
 /** 角色默认模型 spec（包内基准档位） */
 function roleDefaultSpec(role: RoleDef): string {
   return `${role.defaultProvider}/${role.baseModelId}`;
 }
 
 /**
- * 确保三个子 agent 的模型 override 已物化。
- * 包内 agent frontmatter 不声明 model（以便用户 override 始终生效），
- * 因此默认档位必须在首次运行 team 命令时写入 settings 作为 override；
- * 缺失时 agent 会继承会话模型，不符合角色分工。
+ * 确保三个子 agent 的 model 与 fallbackModels override 已物化。
+ * 包内 agent frontmatter 不声明 model / fallbackModels（以便用户 override 始终生效），
+ * 因此默认档位与默认 fallback 链必须在首次运行 team 命令时写入 settings 作为 override；
+ * 缺失时 agent 会继承会话模型且无 fallback，不符合角色分工。
  */
 function ensureDefaultsMaterialized(ctx: ExtensionContext): void {
   for (const role of ROLES) {
     if (!role.agent) continue;
     if (currentOverride(role.agent) === AUTO) {
       writeAgentOverride(role.agent, roleDefaultSpec(role));
+    }
+    if (currentFallback(role.agent) === AUTO) {
+      writeAgentFallbackOverride(role.agent, role.defaultFallback);
     }
   }
   void ctx; // ctx 预留（未来按机器差异默认档）
@@ -135,6 +153,30 @@ function currentOverride(agent: string): string {
   const overrides = sub?.["agentOverrides"] as Record<string, Record<string, unknown>> | undefined;
   const model = overrides?.[agent]?.["model"];
   return typeof model === "string" ? model : AUTO;
+}
+
+/** 将 agentOverride.fallbackModels 写入/清除用户 settings.json（JSON 安全合并） */
+function writeAgentFallbackOverride(agent: string, chain: string[] | null): void {
+  const settings = readJsonSafe(USER_SETTINGS_PATH);
+  const sub = (settings["subagents"] ??= {}) as Record<string, unknown>;
+  const overrides = (sub["agentOverrides"] ??= {}) as Record<string, Record<string, unknown>>;
+  const entry = overrides[agent] ?? (overrides[agent] = {});
+  if (chain === null || chain.length === 0) {
+    delete entry["fallbackModels"];
+  } else {
+    entry["fallbackModels"] = [...chain];
+  }
+  if (Object.keys(entry).length === 0) delete overrides[agent];
+  writeFileSync(USER_SETTINGS_PATH, JSON.stringify(settings, null, 2) + "\n", "utf-8");
+}
+
+/** 当前生效的 fallback 链（agentOverrides.fallbackModels），无则返回 AUTO */
+function currentFallback(agent: string): string[] | typeof AUTO {
+  const settings = readJsonSafe(USER_SETTINGS_PATH);
+  const sub = settings["subagents"] as Record<string, unknown> | undefined;
+  const overrides = sub?.["agentOverrides"] as Record<string, Record<string, unknown>> | undefined;
+  const fb = overrides?.[agent]?.["fallbackModels"];
+  return Array.isArray(fb) && fb.every((x) => typeof x === "string") ? (fb as string[]) : AUTO;
 }
 
 function writeLeaderSpec(spec: string | null): void {
@@ -198,15 +240,15 @@ export default function (pi: ExtensionAPI) {
     },
   });
 
-  // ---------- /team-models：角色模型选择 ----------
+  // ---------- /team-models：角色模型选择（两级导航：provider→model） ----------
 
   pi.registerCommand("team-models", {
-    description: "为团队各角色（领导者/研究员/挑战者/执行者）选择本机可用的任意模型；也可用参数形式 /team-models <agent> <provider/model|auto>；选「自动」恢复包内默认+fallback 链",
+    description: "为团队各角色选择本机可用的任意模型；也可用参数形式 /team-models <agent> <provider/model|default>；选「默认档位」恢复预设+fallback 链",
     handler: async (args, ctx) => {
-      // 0. 物化子 agent 默认模型 override
+      // 0. 物化子 agent 默认 model+fallback override
       ensureDefaultsMaterialized(ctx);
 
-      // ---- 参数形式：/team-models <agent> <spec|auto> ----
+      // ---- 参数形式：/team-models <agent> <spec|default> ----
       const argParts = (args ?? "").trim().split(/\s+/).filter(Boolean);
       if (argParts.length >= 2) {
         const [agentName, specArg] = argParts;
@@ -237,55 +279,151 @@ export default function (pi: ExtensionAPI) {
       }
 
       // ---- 交互 / 打印形式 ----
-      const catalog = fullCatalog(ctx);
+      const byProvider = catalogByProvider(ctx);
       const lines: string[] = [];
       for (const role of ROLES) {
-        const variants = findVariants(ctx, role.baseModelId);
         const current = role.agent ? currentOverride(role.agent) : resolveLeaderSpec();
         const currentLabel = current === AUTO
           ? `默认档位 ${roleDefaultSpec(role)}`
           : current;
+        const fbLabel = role.agent
+          ? `[fallback: ${(currentFallback(role.agent) === AUTO ? role.defaultFallback : currentFallback(role.agent) as string[]).join(", ") || "无"}]`
+          : "";
 
         if (!ctx.hasUI) {
-          lines.push(`${role.label}: 当前=${currentLabel}`);
-          lines.push(`  可用模型: ${catalog.map((v) => v.spec).join(", ") || "无"}`);
+          lines.push(`${role.label}: 当前=${currentLabel} ${fbLabel}`);
+          for (const [prov, models] of byProvider) {
+            lines.push(`  ${prov}: ${models.map((m) => m.id).join(", ")}`);
+          }
           continue;
         }
 
-        // 候选：默认档位（+fallback 链）→ 推荐变体（角色基础模型）→ 其余全部可用模型
-        const recSpecs = new Set(variants.map((v) => v.spec));
-        const others = catalog.filter((v) => !recSpecs.has(v.spec));
-        const options = [
+        // Step 1：选择方式（默认档位 / 按 provider 选模型）
+        const step1Options = [
           role.agent
             ? `默认档位 ${roleDefaultSpec(role)}（+fallback 链）  [当前: ${currentLabel}]`
             : `自动（默认 openai-codex/gpt-5.6-sol）  [当前: ${currentLabel}]`,
-          ...variants.map((v) =>
-            `${v.spec}  推荐${ctx.modelRegistry.hasConfiguredAuth(v.model) ? "" : "  (无 API key)"}`,
-          ),
-          ...others.map((v) =>
-            `${v.spec}${ctx.modelRegistry.hasConfiguredAuth(v.model) ? "" : "  (无 API key)"}`,
-          ),
+          "按 provider 选模型…",
         ];
-        const choice = await ctx.ui.select(`${role.label} — 选择模型`, options);
-        if (choice === undefined) continue; // 用户取消，跳过该角色
+        const step1 = await ctx.ui.select(`${role.label} — 选择方式`, step1Options);
+        if (step1 === undefined) continue; // 用户取消，跳过该角色
 
-        if (choice.startsWith("默认档位")) {
-          writeAgentOverride(role.agent!, roleDefaultSpec(role));
-          report(ctx, `${role.label} → 默认档位 ${roleDefaultSpec(role)}（+fallback 链）`, "success");
-        } else if (choice.startsWith("自动")) {
-          writeLeaderSpec(null);
-          report(ctx, `${role.label} → 自动（默认 openai-codex/gpt-5.6-sol）`, "success");
-        } else {
-          const spec = stripThinking(choice.split("  ")[0].trim());
-          if (role.agent) writeAgentOverride(role.agent, spec);
-          else writeLeaderSpec(spec);
-          report(ctx, `${role.label} → ${spec}（重启 pi 或 /reload 后完全生效）`, "success");
+        if (step1.startsWith("默认") || step1.startsWith("自动")) {
+          if (role.agent) writeAgentOverride(role.agent, roleDefaultSpec(role));
+          else writeLeaderSpec(null);
+          report(ctx, `${role.label} → ${role.agent ? `默认档位 ${roleDefaultSpec(role)}（+fallback 链）` : "自动（默认 openai-codex/gpt-5.6-sol）"}`, "success");
+          continue;
         }
+
+        // Step 2：选择 provider
+        const providers = Array.from(byProvider.keys()).sort();
+        const provOptions = providers.map((p) => `${p} (${byProvider.get(p)!.length} 个模型)`);
+        const provChoice = await ctx.ui.select(`${role.label} — 选择 provider`, provOptions);
+        if (provChoice === undefined) continue;
+        const provider = provChoice.split(" ")[0];
+        const models = byProvider.get(provider) ?? [];
+
+        // Step 3：选择该 provider 下的模型
+        const modelOptions = models.map((m) => {
+          const spec = `${m.provider}/${m.id}`;
+          const rec = m.id === role.baseModelId ? "  推荐" : "";
+          const auth = ctx.modelRegistry.hasConfiguredAuth(m) ? "" : "  (无 API key)";
+          return `${spec}${rec}${auth}`;
+        });
+        const modelChoice = await ctx.ui.select(`${role.label} — 选择模型 (${provider})`, modelOptions);
+        if (modelChoice === undefined) continue;
+        const spec = stripThinking(modelChoice.split("  ")[0].trim());
+        if (role.agent) writeAgentOverride(role.agent, spec);
+        else writeLeaderSpec(spec);
+        report(ctx, `${role.label} → ${spec}（重启 pi 或 /reload 后完全生效）`, "success");
       }
       if (!ctx.hasUI) {
         console.log(lines.join("\n"));
-        console.log("无 UI 模式：用参数形式 /team-models <agent> <provider/model|auto> 直接设置");
+        console.log("无 UI 模式：用参数形式 /team-models <agent> <provider/model|default> 直接设置；fallback 用 /team-fallback");
       }
+    },
+  });
+
+  // ---------- /team-fallback：fallback 链管理 ----------
+
+  pi.registerCommand("team-fallback", {
+    description: "管理子 agent 的 fallback 链：/team-fallback <agent> <spec1> [spec2]... 设链；default 重置；clear 清除；show 显示",
+    handler: async (args, ctx) => {
+      // 0. 物化默认 override
+      ensureDefaultsMaterialized(ctx);
+      const parts = (args ?? "").trim().split(/\s+/).filter(Boolean);
+
+      // 无参数：打印 / 交互
+      if (parts.length === 0) {
+        const lines: string[] = ["fallback 链现状", "──────────"];
+        for (const role of ROLES) {
+          if (!role.agent) continue;
+          const cur = currentFallback(role.agent);
+          const chain = cur === AUTO ? role.defaultFallback : (cur as string[]);
+          lines.push(`${role.label} (${role.agent}): ${chain.length ? chain.join(" → ") : "（无 fallback）"}`);
+        }
+        if (ctx.hasUI) {
+          // 交互：逐角色提供常用快捷操作
+          for (const role of ROLES) {
+            if (!role.agent) continue;
+            const cur = currentFallback(role.agent);
+            const chain = cur === AUTO ? role.defaultFallback : (cur as string[]);
+            const curLabel = chain.length ? chain.join(" → ") : "（无 fallback）";
+            const opt = await ctx.ui.select(`${role.label} fallback [当前: ${curLabel}]`, [
+              `保留当前`,
+              `重置为默认链 (${role.defaultFallback.join(", ")})`,
+              `清除 fallback（无 fallback）`,
+            ]);
+            if (opt === undefined) continue;
+            if (opt.startsWith("重置")) {
+              writeAgentFallbackOverride(role.agent, role.defaultFallback);
+              report(ctx, `${role.label} fallback → 默认链 ${role.defaultFallback.join(", ")}`, "success");
+            } else if (opt.startsWith("清除")) {
+              writeAgentFallbackOverride(role.agent, null);
+              report(ctx, `${role.label} fallback → 清除（无 fallback）`, "success");
+            }
+          }
+        } else {
+          console.log(lines.join("\n"));
+          console.log("无 UI 模式：/team-fallback <agent> <spec1> [spec2]... | default | clear | show");
+        }
+        return;
+      }
+
+      // 参数形式
+      const [agentName, ...rest] = parts;
+      const role = ROLES.find((r) => r.agent === agentName);
+      if (!role?.agent) {
+        report(ctx, `未知 agent「${agentName}」。可用：${ROLES.filter((r) => r.agent).map((r) => r.agent).join(", ")}`, "error");
+        return;
+      }
+      const sub = rest[0] ?? "";
+      if (/^show$/i.test(sub)) {
+        const cur = currentFallback(role.agent);
+        const chain = cur === AUTO ? role.defaultFallback : (cur as string[]);
+        report(ctx, `${role.label} fallback: ${chain.length ? chain.join(" → ") : "（无 fallback）"}`, "info");
+        return;
+      }
+      if (/^default$/i.test(sub)) {
+        writeAgentFallbackOverride(role.agent, role.defaultFallback);
+        report(ctx, `${role.label} fallback → 默认链 ${role.defaultFallback.join(", ")}`, "success");
+        return;
+      }
+      if (/^clear$/i.test(sub)) {
+        writeAgentFallbackOverride(role.agent, null);
+        report(ctx, `${role.label} fallback → 清除（无 fallback）`, "success");
+        return;
+      }
+      // 设整链：校验每个 spec
+      const specs = rest.map(stripThinking);
+      for (const s of specs) {
+        if (!findModel(ctx, s)) {
+          report(ctx, `模型 ${s} 不可用。运行 pi --list-models 查询，或改用默认链`, "error");
+          return;
+        }
+      }
+      writeAgentFallbackOverride(role.agent, specs);
+      report(ctx, `${role.label} fallback → ${specs.join(" → ")}（重启 pi 或 /reload 后生效）`, "success");
     },
   });
 
@@ -318,9 +456,14 @@ export default function (pi: ExtensionAPI) {
         }
         const authOk = ctx.modelRegistry.hasConfiguredAuth(model);
         if (!authOk) allOk = false;
+        // fallback 链
+        const fbCur = currentFallback(role.agent);
+        const fbChain = fbCur === AUTO ? role.defaultFallback : (fbCur as string[]);
+        const fbLabel = fbChain.length ? fbChain.join(" → ") : "（无 fallback）";
         out.push(
           `${authOk ? "✓" : "✗"} ${role.label}: ${model.provider}/${model.id}（${isDefault ? "默认" : "自定义"}）${authOk ? "" : " — 无可用 API key"}`,
         );
+        if (role.agent) out.push(`    fallback: ${fbLabel}`);
       }
 
       // 依赖工具

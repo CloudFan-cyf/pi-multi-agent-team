@@ -2,7 +2,6 @@
 name: challenger
 description: 设计挑战者/红队（DeepSeek V4 Pro/Flash）——对领导者的设计方案做对抗性审查，输出分级 findings 与通过/不通过结论。用于设计定稿前的质量关卡。
 tools: read, grep, find, ls
-fallbackModels: deepseek/deepseek-v4-pro, opencode-go/deepseek-v4-pro, qwen-token-plan/deepseek-v4-pro
 thinking: high
 acceptanceRole: read-only
 acceptance: {"level":"none","reason":"审查结论由领导者裁决采纳，不适用机械验收证据"}

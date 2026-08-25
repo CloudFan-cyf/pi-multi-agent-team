@@ -2,7 +2,6 @@
 name: reviewer
 description: 代码评审（DeepSeek V4 Flash或其他轻量模型）——对执行者完成的代码做只读评审，按 Critical/Important/Minor 分级输出 findings 与明确 verdict。每次执行者完成后的强制评审门。
 tools: read, grep, find, ls, bash
-fallbackModels: deepseek/deepseek-v4-flash, opencode-go/deepseek-v4-flash, qwen-token-plan/deepseek-v4-flash
 inheritProjectContext: true
 acceptanceRole: read-only
 acceptance: {"level":"none","reason":"评审结论由领导者裁决采纳，不适用机械验收证据"}
