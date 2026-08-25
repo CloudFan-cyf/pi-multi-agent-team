@@ -4,7 +4,7 @@
   "description": "多 Agent 协作团队：GPT5.6 Sol 领队（主会话）+ DeepSeek V4 Pro 深度研究/红队 + DeepSeek V4 Flash 执行者。基于 pi-subagents 底座。",
   "private": true,
   "keywords": ["pi-package"],
-  "license": "UNLICENSED",
+  "license": "MIT",
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*",
     "typebox": "*"
