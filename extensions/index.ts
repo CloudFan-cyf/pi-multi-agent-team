@@ -34,10 +34,10 @@ interface RoleDef {
 
 const ROLES: RoleDef[] = [
   { label: "领导者 Leader（主会话）", baseModelId: "gpt-5.6-sol", defaultProvider: "openai-codex", defaultFallback: [] },
-  { label: "深度研究员 deep-researcher", agent: "deep-researcher", baseModelId: "deepseek-v4-pro", defaultProvider: "deepseek", defaultFallback: ["opencode-go/deepseek-v4-pro", "qwen-token-plan/deepseek-v4-pro"] },
-  { label: "设计挑战者 challenger", agent: "challenger", baseModelId: "deepseek-v4-pro", defaultProvider: "deepseek", defaultFallback: ["opencode-go/deepseek-v4-pro", "qwen-token-plan/deepseek-v4-pro"] },
-  { label: "执行者 executor", agent: "executor", baseModelId: "deepseek-v4-flash", defaultProvider: "deepseek", defaultFallback: ["opencode-go/deepseek-v4-flash", "qwen-token-plan/deepseek-v4-flash"] },
-  { label: "代码评审员 reviewer", agent: "reviewer", baseModelId: "deepseek-v4-flash", defaultProvider: "deepseek", defaultFallback: ["opencode-go/deepseek-v4-flash", "qwen-token-plan/deepseek-v4-flash"] },
+  { label: "深度研究员 deep-researcher", agent: "deep-researcher", baseModelId: "deepseek-v4-pro", defaultProvider: "deepseek", defaultFallback: ["opencode-go/deepseek-v4-pro", "qwen-token-plan-cn/deepseek-v4-pro"] },
+  { label: "设计挑战者 challenger", agent: "challenger", baseModelId: "deepseek-v4-pro", defaultProvider: "deepseek", defaultFallback: ["opencode-go/deepseek-v4-pro", "qwen-token-plan-cn/deepseek-v4-pro"] },
+  { label: "执行者 executor", agent: "executor", baseModelId: "deepseek-v4-flash", defaultProvider: "deepseek", defaultFallback: ["opencode-go/deepseek-v4-flash", "qwen-token-plan-cn/deepseek-v4-flash"] },
+  { label: "代码评审员 reviewer", agent: "reviewer", baseModelId: "deepseek-v4-flash", defaultProvider: "deepseek", defaultFallback: ["opencode-go/deepseek-v4-flash", "qwen-token-plan-cn/deepseek-v4-flash"] },
 ];
 
 const AUTO = "__auto__";
@@ -113,11 +113,33 @@ function roleDefaultSpec(role: RoleDef): string {
   return `${role.defaultProvider}/${role.baseModelId}`;
 }
 
+type FallbackSetting = string[] | false | typeof AUTO;
+
+/** 把 fallback 状态转成实际链；false = 用户明确要求无 fallback。 */
+function resolveFallbackChain(setting: FallbackSetting, role: RoleDef): string[] {
+  if (setting === false) return [];
+  if (setting === AUTO) return role.defaultFallback;
+  return setting;
+}
+
+/** 过滤默认链中本机不存在的模型，防止默认配置指向已删除 provider。 */
+function availableDefaultFallback(ctx: ExtensionContext, role: RoleDef): string[] {
+  return role.defaultFallback.filter((spec) => findModel(ctx, spec) !== undefined);
+}
+
+/** 迁移历史 provider 名 qwen-token-plan/* → qwen-token-plan-cn/*（仅新模型存在时）。 */
+function migrateLegacyFallback(ctx: ExtensionContext, chain: string[]): string[] {
+  return chain.map((spec) => {
+    if (!spec.startsWith("qwen-token-plan/")) return spec;
+    const candidate = spec.replace(/^qwen-token-plan\//, "qwen-token-plan-cn/");
+    return findModel(ctx, candidate) ? candidate : spec;
+  });
+}
+
 /**
- * 确保三个子 agent 的 model 与 fallbackModels override 已物化。
- * 包内 agent frontmatter 不声明 model / fallbackModels（以便用户 override 始终生效），
- * 因此默认档位与默认 fallback 链必须在首次运行 team 命令时写入 settings 作为 override；
- * 缺失时 agent 会继承会话模型且无 fallback，不符合角色分工。
+ * 确保子 agent 的 model 与 fallbackModels override 已物化。
+ * 缺失（AUTO）= 从未初始化，写入本机可用的默认链；
+ * false = 用户明确清空，必须保留，绝不能重新物化默认链。
  */
 function ensureDefaultsMaterialized(ctx: ExtensionContext): void {
   for (const role of ROLES) {
@@ -125,11 +147,16 @@ function ensureDefaultsMaterialized(ctx: ExtensionContext): void {
     if (currentOverride(role.agent) === AUTO) {
       writeAgentOverride(role.agent, roleDefaultSpec(role));
     }
-    if (currentFallback(role.agent) === AUTO) {
-      writeAgentFallbackOverride(role.agent, role.defaultFallback);
+    const current = currentFallback(role.agent);
+    if (current === AUTO) {
+      writeAgentFallbackOverride(role.agent, availableDefaultFallback(ctx, role));
+    } else if (Array.isArray(current)) {
+      const migrated = migrateLegacyFallback(ctx, current);
+      if (migrated.some((spec, index) => spec !== current[index])) {
+        writeAgentFallbackOverride(role.agent, migrated);
+      }
     }
   }
-  void ctx; // ctx 预留（未来按机器差异默认档）
 }
 
 /** 将 agentOverride.model 写入/清除用户 settings.json（JSON 安全合并） */
@@ -155,27 +182,23 @@ function currentOverride(agent: string): string {
   return typeof model === "string" ? model : AUTO;
 }
 
-/** 将 agentOverride.fallbackModels 写入/清除用户 settings.json（JSON 安全合并） */
-function writeAgentFallbackOverride(agent: string, chain: string[] | null): void {
+/** 将 agentOverride.fallbackModels 写入 settings。false 表示显式禁用，字段缺失才表示未初始化。 */
+function writeAgentFallbackOverride(agent: string, chain: string[] | false): void {
   const settings = readJsonSafe(USER_SETTINGS_PATH);
   const sub = (settings["subagents"] ??= {}) as Record<string, unknown>;
   const overrides = (sub["agentOverrides"] ??= {}) as Record<string, Record<string, unknown>>;
   const entry = overrides[agent] ?? (overrides[agent] = {});
-  if (chain === null || chain.length === 0) {
-    delete entry["fallbackModels"];
-  } else {
-    entry["fallbackModels"] = [...chain];
-  }
-  if (Object.keys(entry).length === 0) delete overrides[agent];
+  entry["fallbackModels"] = chain === false ? false : [...chain];
   writeFileSync(USER_SETTINGS_PATH, JSON.stringify(settings, null, 2) + "\n", "utf-8");
 }
 
-/** 当前生效的 fallback 链（agentOverrides.fallbackModels），无则返回 AUTO */
-function currentFallback(agent: string): string[] | typeof AUTO {
+/** 当前 fallback 设置：数组=自定义链，false=明确禁用，AUTO=字段缺失/未初始化。 */
+function currentFallback(agent: string): FallbackSetting {
   const settings = readJsonSafe(USER_SETTINGS_PATH);
   const sub = settings["subagents"] as Record<string, unknown> | undefined;
   const overrides = sub?.["agentOverrides"] as Record<string, Record<string, unknown>> | undefined;
   const fb = overrides?.[agent]?.["fallbackModels"];
+  if (fb === false) return false;
   return Array.isArray(fb) && fb.every((x) => typeof x === "string") ? (fb as string[]) : AUTO;
 }
 
@@ -287,7 +310,7 @@ export default function (pi: ExtensionAPI) {
           ? `默认档位 ${roleDefaultSpec(role)}`
           : current;
         const fbLabel = role.agent
-          ? `[fallback: ${(currentFallback(role.agent) === AUTO ? role.defaultFallback : currentFallback(role.agent) as string[]).join(", ") || "无"}]`
+          ? `[fallback: ${resolveFallbackChain(currentFallback(role.agent), role).join(", ") || "无"}]`
           : "";
 
         if (!ctx.hasUI) {
@@ -358,16 +381,14 @@ export default function (pi: ExtensionAPI) {
         const lines: string[] = ["fallback 链现状", "──────────"];
         for (const role of ROLES) {
           if (!role.agent) continue;
-          const cur = currentFallback(role.agent);
-          const chain = cur === AUTO ? role.defaultFallback : (cur as string[]);
+          const chain = resolveFallbackChain(currentFallback(role.agent), role);
           lines.push(`${role.label} (${role.agent}): ${chain.length ? chain.join(" → ") : "（无 fallback）"}`);
         }
         if (ctx.hasUI) {
           // 交互：逐角色提供常用快捷操作
           for (const role of ROLES) {
             if (!role.agent) continue;
-            const cur = currentFallback(role.agent);
-            const chain = cur === AUTO ? role.defaultFallback : (cur as string[]);
+            const chain = resolveFallbackChain(currentFallback(role.agent), role);
             const curLabel = chain.length ? chain.join(" → ") : "（无 fallback）";
             const opt = await ctx.ui.select(`${role.label} fallback [当前: ${curLabel}]`, [
               `保留当前`,
@@ -376,10 +397,11 @@ export default function (pi: ExtensionAPI) {
             ]);
             if (opt === undefined) continue;
             if (opt.startsWith("重置")) {
-              writeAgentFallbackOverride(role.agent, role.defaultFallback);
-              report(ctx, `${role.label} fallback → 默认链 ${role.defaultFallback.join(", ")}`, "success");
+              const defaultChain = availableDefaultFallback(ctx, role);
+              writeAgentFallbackOverride(role.agent, defaultChain);
+              report(ctx, `${role.label} fallback → 默认链 ${defaultChain.join(", ") || "（无可用项）"}`, "success");
             } else if (opt.startsWith("清除")) {
-              writeAgentFallbackOverride(role.agent, null);
+              writeAgentFallbackOverride(role.agent, false);
               report(ctx, `${role.label} fallback → 清除（无 fallback）`, "success");
             }
           }
@@ -399,18 +421,18 @@ export default function (pi: ExtensionAPI) {
       }
       const sub = rest[0] ?? "";
       if (/^show$/i.test(sub)) {
-        const cur = currentFallback(role.agent);
-        const chain = cur === AUTO ? role.defaultFallback : (cur as string[]);
+        const chain = resolveFallbackChain(currentFallback(role.agent), role);
         report(ctx, `${role.label} fallback: ${chain.length ? chain.join(" → ") : "（无 fallback）"}`, "info");
         return;
       }
       if (/^default$/i.test(sub)) {
-        writeAgentFallbackOverride(role.agent, role.defaultFallback);
-        report(ctx, `${role.label} fallback → 默认链 ${role.defaultFallback.join(", ")}`, "success");
+        const defaultChain = availableDefaultFallback(ctx, role);
+        writeAgentFallbackOverride(role.agent, defaultChain);
+        report(ctx, `${role.label} fallback → 默认链 ${defaultChain.join(", ") || "（无可用项）"}`, "success");
         return;
       }
       if (/^clear$/i.test(sub)) {
-        writeAgentFallbackOverride(role.agent, null);
+        writeAgentFallbackOverride(role.agent, false);
         report(ctx, `${role.label} fallback → 清除（无 fallback）`, "success");
         return;
       }
@@ -457,13 +479,17 @@ export default function (pi: ExtensionAPI) {
         const authOk = ctx.modelRegistry.hasConfiguredAuth(model);
         if (!authOk) allOk = false;
         // fallback 链
-        const fbCur = currentFallback(role.agent);
-        const fbChain = fbCur === AUTO ? role.defaultFallback : (fbCur as string[]);
+        const fbChain = role.agent ? resolveFallbackChain(currentFallback(role.agent), role) : [];
+        const invalidFallbacks = fbChain.filter((spec) => !findModel(ctx, spec));
+        if (invalidFallbacks.length > 0) allOk = false;
         const fbLabel = fbChain.length ? fbChain.join(" → ") : "（无 fallback）";
         out.push(
           `${authOk ? "✓" : "✗"} ${role.label}: ${model.provider}/${model.id}（${isDefault ? "默认" : "自定义"}）${authOk ? "" : " — 无可用 API key"}`,
         );
-        if (role.agent) out.push(`    fallback: ${fbLabel}`);
+        if (role.agent) {
+          out.push(`    ${invalidFallbacks.length ? "✗ " : ""}fallback: ${fbLabel}`);
+          if (invalidFallbacks.length) out.push(`      不可用: ${invalidFallbacks.join(", ")}（用 /team-fallback ${role.agent} 修正）`);
+        }
       }
 
       // 依赖工具

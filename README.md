@@ -94,7 +94,9 @@ spec 会对照本机可用模型校验，非法时报错并提示用 `pi --list-
 /team-fallback executor opencode-go/deepseek-v4-flash qwen-token-plan/deepseek-v4-flash
 ```
 
-每个 spec 对照本机可用模型校验，非法时报错。**交互形式**（无参数）逐角色提供：保留当前 / 重置为默认 / 清除 fallback；列表增删重排交给参数形式。`/team-doctor` 会显示每个角色的当前 fallback 链便于核对。
+每个 spec 对照本机可用模型校验，非法时报错。**交互形式**（无参数）逐角色提供：保留当前 / 重置为默认 / 清除 fallback；列表增删重排交给参数形式。
+
+`clear` 会持久化为 pi-subagents 原生的 `fallbackModels: false`（而不是删除字段），因此后续 `/team`、`/team-doctor` 不会重新物化默认链。`/team-doctor` 会显示并验证每个 fallback 模型；链中含已删除/改名的 provider 时会标红。默认链只物化本机实际可用的模型，历史 `qwen-token-plan/*` 会自动迁移为 `qwen-token-plan-cn/*`（若新模型存在）。
 
 > 能力适配提醒：agent 的 system prompt 是角色契约，换任意模型后仍然成立；但 deep-researcher / challenger 角色建议配推理能力较强的模型（非推理模型的 thinking 会被 pi 自动 clamp 为 off），弱模型会明显降低研究/审查质量。
 

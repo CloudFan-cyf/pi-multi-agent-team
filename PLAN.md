@@ -231,6 +231,12 @@ Frontmatter：`name: team-orchestration`，`description` 明确「/team 激活�
 - task-packets.md 新增「评审任务包」构造规范；SKILL.md 新增「接收评审纪律」（核验不盲从）
 - 验证：doctor 覆盖 reviewer（默认档位物化）、4 个 package agent 全部发现、真实 executor→reviewer 冒烟通过（reviewer 实际运行 deepseek-v4-flash，acceptance not-required，分级 findings + verdict 正确，正确识别任务包层面问题）
 
+#### Bugfix：fallback clear 持久化与过期 provider 迁移（2026-08-21）
+
+- 根因 1：`clear` 删除 `fallbackModels`，与“未初始化”状态混用；下一次 team 命令重新物化默认链。修复：用 pi-subagents 原生 `fallbackModels: false` 表示显式禁用，只有字段缺失才物化默认链
+- 根因 2：默认链仍使用旧 provider `qwen-token-plan`，本机实际为 `qwen-token-plan-cn`；doctor 过去不验证链。修复：默认名更新；启动时迁移旧链；默认物化过滤本机不存在模型；doctor 标红不可用项
+- 回归场景：clear → settings 为 false → doctor/team 后仍为 false 且显示“无 fallback”；旧 qwen 链经 doctor 自动迁移
+
 #### 变更记录：fallback 链可配置 + 两级导航（2026-08-21，Step 9）
 
 - **fallback 可配置**：4 个 agent frontmatter 移除 `fallbackModels`（与 Step 7 的 model 同理：pi-subagents 的 override 仅在 frontmatter 未声明时生效）；`RoleDef` 增 `defaultFallback`；`ensureDefaultsMaterialized` 兼物化 `model` + `fallbackModels` 两个 override 字段；新增 `/team-fallback` 命令（设整链 / default / clear / show + 交互快捷操作）
