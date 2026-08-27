@@ -18,7 +18,7 @@
 import { createHash, randomUUID as nodeRandomUUID } from "node:crypto";
 import { join, resolve } from "node:path";
 import * as fsp from "node:fs/promises";
-import { MAX_SHARD_BYTES, TEAM_STATUS_KIND, TEAM_STATUS_VERSION, type TeamRuntimeShardV1 } from "./types.ts";
+import { MAX_MEMBERS, MAX_SHARD_BYTES, TEAM_STATUS_KIND, TEAM_STATUS_VERSION, type TeamRuntimeShardV1 } from "./types.ts";
 
 /** 超过 24 小时的 shard 被 gc 删除。 */
 export const GC_SHARD_RETENTION_MS = 24 * 60 * 60 * 1000;
@@ -64,6 +64,39 @@ export function sessionNamespace(agentDir: string, sessionId: string): string {
   return join(resolve(agentDir), "team-status", "v1", digest);
 }
 
+/** 保守的便携文件名白名单：仅允许 [A-Za-z0-9._-]。显式排除 `/`、`\`、`:`、`*`、
+ *  `?`、`"`、`<`、`>`、`|` 等 Unix/Windows 路径或保留字符，防止 writerId 被用作
+ *  文件名时产生路径穿越或平台兼容问题。 */
+const WRITER_ID_PATTERN = /^[A-Za-z0-9._-]+$/;
+
+function isPathSafeWriterId(writerId: unknown): writerId is string {
+  return typeof writerId === "string" && WRITER_ID_PATTERN.test(writerId);
+}
+
+function assertPathSafeWriterId(writerId: unknown): asserts writerId is string {
+  if (!isPathSafeWriterId(writerId)) {
+    throw new TypeError("writerId must be a non-empty portable filename ([A-Za-z0-9._-])");
+  }
+}
+
+/**
+ * 读写共享的 shard 结构校验：返回命中的违规字段，否则返回 undefined。
+ * write() 与 parseRuntimeShard 共用同一套规则，保证读写校验永不刻意分叉。
+ */
+function shardShapeViolation(
+  shard: Record<string, unknown>,
+  expectedSessionId: string,
+): "kind" | "version" | "sessionId" | "writerId" | "heartbeatAt" | "members" | "too-many-members" | undefined {
+  if (shard.kind !== TEAM_STATUS_KIND) return "kind";
+  if (shard.version !== TEAM_STATUS_VERSION) return "version";
+  if (shard.sessionId !== expectedSessionId) return "sessionId";
+  if (!isPathSafeWriterId(shard.writerId)) return "writerId";
+  if (typeof shard.heartbeatAt !== "number" || !Number.isFinite(shard.heartbeatAt)) return "heartbeatAt";
+  if (!Array.isArray(shard.members)) return "members";
+  if (shard.members.length > MAX_MEMBERS) return "too-many-members";
+  return undefined;
+}
+
 /**
  * 解析并校验一个 shard 文本。仅接受同 session、同 kind/version、且结构完整
  * （writerId / heartbeatAt / members 存在）的对象；其余一律返回 undefined。
@@ -79,12 +112,7 @@ export function parseRuntimeShard(value: string, expectedSessionId: string): Tea
   }
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return undefined;
   const shard = parsed as Record<string, unknown>;
-  if (shard.kind !== TEAM_STATUS_KIND) return undefined;
-  if (shard.version !== TEAM_STATUS_VERSION) return undefined;
-  if (shard.sessionId !== expectedSessionId) return undefined;
-  if (typeof shard.writerId !== "string" || shard.writerId.length === 0) return undefined;
-  if (typeof shard.heartbeatAt !== "number" || !Number.isFinite(shard.heartbeatAt)) return undefined;
-  if (!Array.isArray(shard.members)) return undefined;
+  if (shardShapeViolation(shard, expectedSessionId)) return undefined;
   return shard as unknown as TeamRuntimeShardV1;
 }
 
@@ -102,14 +130,24 @@ export class TeamShardStore {
   }
 
   async write(shard: TeamRuntimeShardV1): Promise<void> {
-    const writerId = shard.writerId;
-    if (typeof writerId !== "string" || writerId.length === 0 || writerId.includes("/") || writerId.includes("\\")) {
-      throw new TypeError("shard.writerId must be a non-empty path-safe string");
-    }
     const sessionId = shard.sessionId;
     if (typeof sessionId !== "string" || sessionId.length === 0) {
       throw new TypeError("shard.sessionId must be a non-empty string");
     }
+
+    // 与 read() 共用同一套结构校验（parseRuntimeShard 的 shardShapeViolation），
+    // 避免写入与读取对 kind/version/members 等约束产生分叉。
+    const violation = shardShapeViolation(shard as unknown as Record<string, unknown>, sessionId);
+    if (violation === "too-many-members") {
+      throw new RangeError(`shard.members exceeds MAX_MEMBERS=${MAX_MEMBERS} (${shard.members.length})`);
+    }
+    if (violation === "writerId") {
+      throw new TypeError("shard.writerId must be a non-empty portable filename ([A-Za-z0-9._-])");
+    }
+    if (violation !== undefined) {
+      throw new TypeError(`invalid shard: ${violation}`);
+    }
+    const writerId = shard.writerId;
 
     const serialized = JSON.stringify(shard);
     const bytes = Buffer.byteLength(serialized, "utf8");
@@ -180,6 +218,7 @@ export class TeamShardStore {
   }
 
   async remove(sessionId: string, writerId: string): Promise<void> {
+    assertPathSafeWriterId(writerId);
     const dir = sessionNamespace(this.agentDir, sessionId);
     const target = join(dir, `${writerId}.json`);
     try {

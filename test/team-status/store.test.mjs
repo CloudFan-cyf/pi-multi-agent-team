@@ -22,7 +22,7 @@ import {
   parseRuntimeShard,
   sessionNamespace,
 } from "../../extensions/team-status/store.ts";
-import { TEAM_STATUS_KIND, TEAM_STATUS_VERSION, MAX_SHARD_BYTES } from "../../extensions/team-status/types.ts";
+import { TEAM_STATUS_KIND, TEAM_STATUS_VERSION, MAX_SHARD_BYTES, MAX_MEMBERS } from "../../extensions/team-status/types.ts";
 import { NOW, SESSION_ID, member, shard } from "./fixtures.mjs";
 
 /** 首次 rename 抛给定 errno code，之后委托真实 rename —— 模拟 Windows 覆盖冲突。 */
@@ -165,6 +165,49 @@ test("remove deletes only the given writer shard and is idempotent", async (t) =
   assert.equal(shards[0].writerId, "b");
   await store.remove(SESSION_ID, "a");
   assert.equal((await store.read(SESSION_ID)).length, 1);
+});
+
+test("remove rejects a traversal writerId and leaves an outside-sentinel intact", async (t) => {
+  const { agentDir, store } = await makeStore(t);
+  const dir = sessionNamespace(agentDir, SESSION_ID);
+  await mkdir(dir, { recursive: true });
+  // 哨兵位于 session 目录之外：若未做路径安全，join(dir, "../victim.json")
+  // 会落到 session 目录的父目录（<agentDir>/team-status/v1/victim.json）。
+  const victim = path.join(path.dirname(dir), "victim.json");
+  await writeFile(victim, "sentinel");
+
+  await assert.rejects(store.remove(SESSION_ID, "../victim"), TypeError);
+  assert.equal(await exists(victim), true);
+});
+
+test("write and remove reject non-portable writerId filenames", async (t) => {
+  const { store } = await makeStore(t);
+  for (const bad of ["../victim", "a/b", "a\\b", "a:b", "a*b", "a?b", 'a"b', "a<b", "a>b", "a|b", ""]) {
+    await assert.rejects(store.write(shard({ writerId: bad })), TypeError);
+    await assert.rejects(store.remove(SESSION_ID, bad), TypeError);
+  }
+  assert.equal((await store.read(SESSION_ID)).length, 0);
+});
+
+test("parseRuntimeShard rejects shards with more than MAX_MEMBERS members", () => {
+  const atLimit = shard({ members: Array.from({ length: MAX_MEMBERS }, (_, i) => member({ key: `m-${i}` })) });
+  assert.ok(parseRuntimeShard(JSON.stringify(atLimit), SESSION_ID));
+  const tooMany = shard({ members: Array.from({ length: MAX_MEMBERS + 1 }, (_, i) => member({ key: `m-${i}` })) });
+  assert.equal(parseRuntimeShard(JSON.stringify(tooMany), SESSION_ID), undefined);
+});
+
+test("write rejects shards with more than MAX_MEMBERS members before serialization", async (t) => {
+  const { store } = await makeStore(t);
+  const tooMany = shard({ members: Array.from({ length: MAX_MEMBERS + 1 }, (_, i) => member({ key: `m-${i}` })) });
+  await assert.rejects(store.write(tooMany), /MAX_MEMBERS|members/i);
+  assert.equal((await store.read(SESSION_ID)).length, 0);
+});
+
+test("write rejects wrong kind or version like read does", async (t) => {
+  const { store } = await makeStore(t);
+  await assert.rejects(store.write(shard({ kind: "other" })), TypeError);
+  await assert.rejects(store.write(shard({ version: 2 })), TypeError);
+  assert.equal((await store.read(SESSION_ID)).length, 0);
 });
 
 test("gc removes stale .tmp files and keeps fresh ones", async (t) => {
