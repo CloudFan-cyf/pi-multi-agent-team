@@ -211,7 +211,7 @@ function writeLeaderSpec(spec: string | null): void {
 
 function report(ctx: ExtensionContext, message: string, kind: "info" | "error" | "success" = "info"): void {
   if (ctx.hasUI) {
-    ctx.ui.notify(message, kind);
+    ctx.ui.notify(message, kind === "success" ? "info" : kind);
   } else {
     console.log(`[${kind}] ${message}`);
   }
@@ -465,7 +465,7 @@ export default function (pi: ExtensionAPI) {
         const override = role.agent ? currentOverride(role.agent) : null;
         const leaderInfo = role.agent ? null : resolveLeaderSpecInfo();
         const effective = role.agent
-          ? (override === AUTO ? roleDefaultSpec(role) : override)
+          ? (override === AUTO ? roleDefaultSpec(role) : override!)
           : leaderInfo!.spec;
         const isDefault = role.agent
           ? effective === roleDefaultSpec(role)

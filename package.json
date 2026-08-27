@@ -5,6 +5,16 @@
   "private": true,
   "keywords": ["pi-package"],
   "license": "MIT",
+  "scripts": {
+    "test": "node --experimental-strip-types --test \"test/team-status/*.test.mjs\"",
+    "test:team-status": "node --experimental-strip-types --test \"test/team-status/*.test.mjs\"",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "0.84.2",
+    "@types/node": "^22.18.0",
+    "typescript": "^5.9.2"
+  },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*",
     "typebox": "*"
