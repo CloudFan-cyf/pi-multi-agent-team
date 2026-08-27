@@ -206,9 +206,10 @@ Foreground 成员只使用父进程的工具事件，不与 Fleet DTO 做逐条 
 
 - start：从 profile/description/task 建立成员；
 - update：从 `pi-web-subagent` partial details 更新状态和 preview；
-- end：写 terminal 状态。
+- end：foreground Agent 写 terminal 状态；background Agent 保留 `sessionId → member key` 关联；
+- `message_end` 中的 `pi-web:subagent-notification` custom message 提供 background Agent 的终态通知，按 `details.sessionId` 更新原成员。
 
-若当前 pi-web 版本的 partial details 缺少某字段，adapter 退化为标题 + 当前工具/状态，不解析 pi-web 内部 HTTP API。
+若当前 pi-web 版本的 partial details 或 notification 缺少某字段，adapter 退化为标题 + 当前工具/状态，不解析 pi-web 内部 HTTP API。
 
 ### 7.4 Team 与其他 Agent 分类
 
@@ -304,9 +305,9 @@ visible --narrow---------> responsive-hidden
 responsive-hidden --wide-> visible
 ```
 
-- `handle.hide()` 后引用永久失效；再次 show 必须重新调用 `ctx.ui.custom()`。
-- Promise 采用受控 fire-and-forget；捕获 rejection，不能产生未处理 Promise。
-- `session_shutdown` 清 timer、轮询器、overlay handle 和组件引用。
+- Overlay factory 必须保存 `done` 回调；hide/shutdown 调用 `done(null)`，让 `ctx.ui.custom()` Promise 正常 resolve 并触发组件 `dispose()`。`OverlayHandle` 只用于 `unfocus()`/可见性控制；直接 `handle.hide()` 不会解决宿主 Promise，因此不能作为正常关闭路径。
+- Promise 采用受控 fire-and-forget；捕获 rejection，并在 `finally` 丢弃 handle、done、component 引用，不能产生未处理 Promise。
+- `session_shutdown` 清 timer、轮询器、overlay 和组件引用。
 - `/reload` 后由新的 `session_start` 重建，旧 context 不得复用。
 
 ### 10.3 命令
