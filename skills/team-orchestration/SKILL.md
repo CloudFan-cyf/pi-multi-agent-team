@@ -46,9 +46,9 @@ description: 多 Agent 协作团队编排协议（/team 激活）。GPT5.6 Sol �
 
 **每个 executor 任务包完成后，必须立即派 reviewer 评审该产出，然后将执行汇报与评审报告一起呈交你裁决。没有例外**——琐碎任务也不例外：轻量模型评审很便宜，漏掉的 bug 很贵。
 
-- 配对规则：1 个任务包 = 1 次 executor 执行 + 1 次 reviewer 评审；并行批次 = N 对配对（见 workflows.md「执行+评审门」配方）
+- 配对规则：1 个任务包 = 1 次 executor 执行 + 1 次 reviewer 评审；并行批次 = N 对配对（见 workflows.md「初次执行 + fresh reviewer」配方）
 - 评审任务包构造规范见 references/task-packets.md「评审任务包」
-- **修复闭环**：reviewer 报 Critical/Important 且你裁决采纳的，派回原 executor 修复；修复后**必须再过一次 reviewer**，直到 verdict 为通过或你显式接受剩余风险
+- **修复闭环**：reviewer 报 Critical/Important 且你裁决采纳的，派回原 executor 修复；修复后**必须再过一次 reviewer**，直到 verdict 为通过或你显式接受剩余风险。修复是多轮续作：必须 `resume` 原 executor 并持久化 mission state，见「编排状态与恢复」
 
 ### 接收评审纪律
 
@@ -83,8 +83,9 @@ description: 多 Agent 协作团队编排协议（/team 激活）。GPT5.6 Sol �
   → 并行执行（executor×N，独立任务包用 runs.all；见「并行派发纪律」）
   → 评审门（每个 executor 汇报后立即派 reviewer 审对应产出；
      执行汇报 + 评审报告一起呈交你）
-  → 裁决与修复闭环（按「接收评审纪律」裁决；采纳项派回原 executor 修，
-     修复后重过 reviewer，直到通过或你显式接受剩余风险）
+  → 裁决与修复闭环（按「接收评审纪律」裁决；采纳项 resume 原 executor 修，
+     修复后重过 reviewer，直到通过或你显式接受剩余风险；修复/复审轮必须
+     走 async workflow + mission state 续作，见「编排状态与恢复」）
   → 验收（你抽查 diff + 核对验证结果；必要时再派 challenger 审实现）
 ```
 
@@ -123,12 +124,120 @@ description: 多 Agent 协作团队编排协议（/team 激活）。GPT5.6 Sol �
   3. **跑全量测试**：局部全绿不等于整体绿
   4. **抽查**：executor 可能犯系统性错误，抽查关键文件
 
+## 编排状态与恢复（强制纪律）
+
+多轮团队工作（初次执行 → 评审 → 裁决 → 修复 → 复审 → 验收，以及 challenger 第 1/2 轮）是跨
+workflow 的续作，必须用 **async workflow + mission** 承载，用 **mission state** 持久化进度。
+以下纪律对领导者强制生效。
+
+### 1. 多轮工作 = async workflow + mission
+
+- 多轮团队工作一律 `subagent({ workflowScript, mission: {...}, async: true })`；**禁止 `mission:false`**
+  （`mission:false` 的 workflow 没有 `state` 全局，无法持久化进度，也不能跨 workflow 续作）。
+- 首个 workflow 创建 mission，从回执 `details.missionId` 捕获 missionId；**后续每个 workflow 必须显式传
+  同一 `missionId`**，否则会静默新建 mission、拿到空 state。
+- 续作 lane（executor 修复、challenger 第 2 轮）需要会话文件留在共享 cwd，外层 workflow 用
+  **`isolation:none`**；**不得 `worktree: true`**（worktree 隔离会切断 retained 会话的恢复路径）。
+
+### 2. 初次用 agent，续作用 resume
+
+- **初次执行/初次评审**：`runs.run(key, { agent, task, context: "fresh" })`（保持初次子 Agent fresh context）。
+- **修复轮、challenger 第 2 轮**：必须 `resume`（`resume: "<runId>"` 或 keyed receipt）。
+- **相同 key + 重新传 agent 启动不是恢复**——那是丢失续作链路后当新会话跑，上下文不延续。
+- `resume` 与 `agent` 互斥：续作沿用原 agent/model/工具契约，不换角色配置；resume item 不接受 `gate`。
+
+### 3. state 持久化（mission state）
+
+- **state key 用 `lane.<laneKey>`**；任务板 = `taskboard` 索引（`{version, laneKeys}`，只登记 lane
+  存在性）；**phase/runId 等可变状态唯一事实源是 `lane.<laneKey>`**，任务板不复制（防双份漂移）；
+  `mission.show` 是任务板的外部投影。
+- 精简 schema（`resumeSource.key` = 源 workflow 中该 child 的**实际启动 key**，不硬编码；`resumeSource`
+  只作恢复索引记录，配方不读它来决定本轮 resume——本轮用领导者注入的 `sourceWorkflowRunId`；初次轮无
+  来源可记，可省略 `resumeSource`）：
+
+  ```json
+  {
+    "version": 1,
+    "laneKey": "t1",
+    "role": "executor",
+    "phase": "reviewed",
+    "round": 1,
+    "latestRunId": "<runId>",
+    "latestWorkflowKey": "t1",
+    "resumeSource": { "workflowRunId": "<上一轮 workflowRunId>", "key": "<源 workflow 中该 child 的实际启动 key>", "terminal": true },
+    "reviewRunId": "<最近一轮评审 runId>",
+    "reviewVerdict": "待领导者裁决（评审配方只写占位；实际短 verdict ≤60 字由领导者裁决回写配方写入）",
+    "acceptedFindings": ["≤120 字，最多 5 条"],
+    "artifactRefs": ["run/output artifact 路径"]
+  }
+  ```
+
+- **摘要预算**：`reviewVerdict` ≤ 60 字（评审配方只写占位「待领导者裁决」，实际值由裁决回写配方
+  写入）；`acceptedFindings` 最多 5 条、每条 ≤ 120 字；全文留在 run/output artifact（记入
+  `artifactRefs`），不塞进 state（state 文件上限 256 KiB）。
+- **`state.set` 失败必须停止续作**：写不进去就停下上报领导者，绝不「无状态继续」。
+- 每次 resume 返回新 `runId`，**必须先 `state.set` 更新 `lane.<laneKey>.latestRunId` 再启动 reviewer**；
+  循环内永远从最新返回的 runId 继续。
+
+### 4. phase 状态机（至少这些状态）
+
+`implementation-done-pending-review` → `reviewed`（附 reviewRunId；reviewVerdict 占位「待领导者裁决」）
+→（领导者裁决回写，见 workflows.md「领导者裁决后回写 state」配方）无采纳的 Critical/Important →
+`accepted`；有采纳的 Critical/Important → `needs-fix` → `fixing`（resume 启动修复，见 workflows.md
+修复配方）→ `fix-done-pending-review` → `reviewed` →（裁决回写）`accepted`；
+任何一处明确证明不可恢复并走 fresh fallback 时置 `fallback`（记录原因）。
+challenger lane 用 `challenging`（进行中）→ `reviewed`（附 findings）→（裁决回写：采纳需修订设计 →
+`needs-fix`；无阻塞 → `accepted`）→ 第 2 轮仅允许从 round=1 的 `reviewed` / `needs-fix` 续作，且
+第 2 轮后不再 resume challenger（领导者接受/裁决剩余风险），+ `round` 字段。
+phase 为 `fixing` / `challenging` 等**中间态**时，恢复前必须先 `status` / `subagent_wait` 确认上一轮
+workflow 已 terminal、无在跑的 owning run（lease 冲突 = 已有续作在跑），**禁止对同一 lane 重复启动修复**。
+
+### 5. 后续 workflow 开头自检
+
+续作 workflow 开头必须 `await state.get("lane." + laneKey)`：
+- **lane 必须存在**，否则说明漏传 missionId 静默新建了 mission——停止续作，上报领导者核对 missionId。
+- phase 必须在可续作集合（`needs-fix` / `reviewed` 等），否则上报领导者，不盲目 resume。
+- phase 为 `fixing` / `challenging` 等**中间态**（上一轮可能未收尾）：先 `status` / `subagent_wait`
+  确认上一轮 workflow 已 terminal、无在跑的 owning run，再决定是否 resume；**禁止重复启动同一 lane**。
+
+### 6. 领导者回执记录
+
+每个 async workflow 回执，领导者记录：**missionId、workflowRunId、稳定 key**。
+当前 workflow 脚本内**拿不到顶层 workflowRunId**（脚本只见 child 结果）——**不伪造**；由领导者把
+上一轮 workflowRunId 作为 `sourceWorkflowRunId` 注入本轮（任务包或 state），本轮配方据此做 keyed
+resume：`resume: { workflowRunId: sourceWorkflowRunId, key: <上一轮该 child 的实际启动 key>, latest: true }`，
+并把该来源记入 `lane.<laneKey>.resumeSource`（`key` = 源 workflow 中该 child 的**实际启动 key**，不硬编码）。
+**配方不读 `resumeSource` 来决定本轮 resume**（脚本拿不到顶层 workflowRunId，初次轮写不出完整来源）；
+本轮 keyed resume 的 key 用 `lane.<laneKey>.latestWorkflowKey`（上一轮该 child 的实际启动 key）。
+
+### 7. 恢复决策顺序（可机械执行）
+
+需要续作时按序判定，命中即用，不再下探：
+
+1. **当前同一 workflow 内**：优先最新返回的 `runId`（resume 返回的新 runId 总是最新的）。
+2. **跨 workflow**：优先 terminal async workflow 的 **workflow-receipt** 做 keyed resume——
+   `resume: { workflowRunId, key, latest: true }`（须先确认源 workflow terminal）。
+3. **mission.show + 任务板**：mission.show 是任务板的外部投影，用于重建 lane 清单；phase/runId 等
+   从 `lane.<laneKey>` state 读，不直接驱动 resume。
+4. **direct latestRunId**：同父会话内用 `lane.<laneKey>.latestRunId` 直接 `resume: "<runId>"` 补救。
+5. **children.list**：只用于补充 reason（为什么某 run 不可 resume）；**未列出 ≠ 不可恢复**
+   （它最多显示最近 10 个 retained children）。
+6. **fresh fallback**：只有**明确证明** stopped / 会话或 cwd 缺失 / receipt 不存在，且无其他可恢复
+   索引时才允许；用完整重建包（见 references/task-packets.md），phase 记 `fallback` + 原因。
+
+护栏（违反即视为违规）：
+- **receipt stale/缺失先确认源 workflow terminal**：先用 `status` / `subagent_wait` 等待源 workflow
+  结束后再判定 receipt，不因暂时读不到就降级。
+- **lease 冲突 = 已有续作在跑**：等待 owning run 结束，**绝不 fallback**；同一 lane 两个续作并发
+  修改是数据竞争。
+- **delta 续作包不得交给 fresh fallback**（fresh 无原上下文，见 references/task-packets.md）。
+
 ## 上下文经济（重要）
 
 你的上下文是全队最贵的资源。纪律：
 
 - **任务包必须蒸馏**（规范见 references/task-packets.md）：只给目标、约束、文件路径清单、验收标准；**禁止把整段对话历史粘给子 agent**
-- 子 agent 一律用 **fresh context**（不传 `context: "fork"`）
+- 子 agent 初次派发一律用 **fresh context**（不传 `context: "fork"`）；续作走 `resume`（保留原会话与模型/工具契约），见「编排状态与恢复」
 - 子 agent 的产出以简报/清单形式回流，不整段转载其原始输出到你的上下文——提炼后再用
 - 用户没有追问细节时，你的回复保持决策级摘要
 

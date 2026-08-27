@@ -104,6 +104,31 @@ spec 会对照本机可用模型校验，非法时报错并提示用 `pi --list-
 
 逐角色检查：override 生效后的模型可解析、API key 可用；`subagent` / web 工具存在；skill 被系统发现。输出迁移体检报告。
 
+## 子 Agent 续作与任务板
+
+多轮团队工作（初次执行 → 评审 → 裁决 → 修复 → 复审 → 验收）跨多个 workflow，靠
+pi-subagents 的 **async workflow + mission** 能力续作，**不新增任何运行时依赖**：
+
+- **多轮工作 = async workflow + mission**：首个 workflow 用 `mission: {...}` 创建 mission 并捕获
+  `details.missionId`；后续每轮 workflow 显式传同一 `missionId`，用 `state.get` / `state.set` 读写
+  `lane.<laneKey>` 状态；任务板 = state 里的 `{version, laneKeys}` 索引，只登记 lane 存在性，
+  phase/runId 等可变状态唯一事实源是 `lane.<laneKey>`（不复制，防双份漂移；mission.show 是它的外部投影）。
+  续作 lane 用 `isolation: none`（共享 cwd），不使用 worktree 隔离。
+- **进程结束但会话可恢复**：workflow 结束后，child 会话文件、terminal async workflow 的
+  `workflow-receipt.json`（keyed receipt）与 mission state 都持久化在磁盘；同一持久父会话可基于
+  receipt / runId 续作原 child，不丢上下文。
+- **恢复策略：receipt-first**：优先 terminal async workflow 的 receipt 做 keyed resume
+  （`resume: { workflowRunId, key, latest: true }`）→ 同父会话用 `latestRunId` 直接 resume →
+  `children.list` 仅诊断（未列出 ≠ 不可恢复，它最多显示最近 10 个 retained children）→ 只有明确
+  证明 stopped / 会话或 cwd 缺失 / receipt 不存在时才 fresh fallback（完整重建包，不是 delta 包）。
+- **resume 沿用原模型/工具契约**：`resume` 与 `agent` 互斥，续作保留原 agent、模型、工具配置，
+  不换角色；resume item 不接受 `gate`。
+- **不承诺任意新父会话可恢复**：恢复路径限定在**同一持久父会话 + 同一 mission**；跨全新独立
+  父会话的恢复遵循 pi-subagents 当前的所有权/会话约束，不做额外保证。
+
+编排协议细节见 `skills/team-orchestration/SKILL.md`「编排状态与恢复」，配方与任务包模板见
+`skills/team-orchestration/references/`。
+
 ## 包结构
 
 ```
@@ -116,8 +141,8 @@ spec 会对照本机可用模型校验，非法时报错并提示用 `pi --list-
 │   └── team-orchestration/
 │       ├── SKILL.md             # 编排协议：路由/流程/评审门/并行纪律/升级规则
 │       └── references/
-│           ├── task-packets.md  # 任务包构造规范（含评审任务包）
-│           └── workflows.md     # workflowScript 编排配方（含执行+评审门）
+│           ├── task-packets.md  # 任务包构造规范（初次/续作/重建三形态，含评审任务包）
+│           └── workflows.md     # workflowScript 编排配方（执行+评审门、resume 续作与恢复索引）
 ├── extensions/
 │   └── index.ts                 # /team /team-models /team-fallback /team-doctor
 └── package.json                 # pi manifest
