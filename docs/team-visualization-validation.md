@@ -114,13 +114,15 @@ role 被错误降级为 `other`、model 缺失。
 - async 优先取 artifact step `agent`/`model`，缺失回退公开 node `label`；该案例现在为
   `role=deep-researcher`、`agent=deep-researcher`、`model=gpt-5.6-sol`，title 仍用稳定 node `id`。
 - foreground 从 progress/result DTO 填充 model，merge 在省略时保留 last-known model。
-- TUI/Web 紧凑头行为 `{icon} {角色} · {state}[ · {model}]`；Web 角色/状态段注入有界标准 SGR
-  （完整复位，经 AnsiText），摘要保持纯文本。
+- TUI/Web 紧凑头行为 `{icon} {角色} · {state}[ · {model}]`；该阶段曾为 Web 注入 SGR，
+  后续真实 0.8.9 复测证明宿主不解析 ANSI，已由下文「pi-web 0.8.9 ANSI 乱码修复波」
+  的纯 emoji 方案取代。
 
 ### 复测状态（诚实记录）
 
-- 自动测试已覆盖该真实形状 fixture 并转绿；真实 TUI/stock pi-web 复测仍为
-  **⛔ PENDING RE-TEST**，与 Gate 5–8 一起保持待办，未标记为 PASS。
+- 自动测试已覆盖该真实形状 fixture 并转绿；真实 stock pi-web 0.8.9 的角色、模型与活动信息
+  已在后续 emoji 修复后通过用户浏览器复测。TUI 焦点/resize/retention/cleanup 仍按 Gates 5–8
+  的对应未覆盖项保留待办。
 - 未触碰 `~/.pi/agent/settings.json`，未启动/停止任何 pi-web 进程，未改动只读上游 checkout。
 
 ## 位置不变量源码证据与 workflowKey 关联守卫（复审修复）
@@ -173,6 +175,7 @@ TUI overlay（`extensions/team-status/tui-overlay.ts`）继续使用宿主 Theme
 ### 复测状态（诚实记录）
 
 - 自动测试（`npm test`）已新增精确 emoji 映射、含/不含 model 头部、无控制码断言并转绿。
-- 真实 stock pi-web 0.8.9 与 0.8.11 的乱码复测、Gate 5–8 仍保持 **⛔ PENDING RE-TEST**，
-  未标记为 PASS。本轮未触碰 `~/.pi/agent/settings.json`，未启动/停止任何 pi-web 进程，
-  未改动只读上游 checkout。
+- **stock pi-web 0.8.9 浏览器复测 ✅ PASS（用户实测）**：执行 `/reload`、`/team` 后，
+  Widget 乱码消失，角色等成员信息显示正确。
+- 0.8.11 浏览器复测、30±2 秒终态保留、110→109 resize、`/reload`/会话切换清理仍为
+  **⛔ PENDING RE-TEST**。本轮未修改 pi-web / pi-subagents 或外部只读 checkout。
