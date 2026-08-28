@@ -297,54 +297,58 @@ export function registerTeamStatus(pi: ExtensionAPI, deps: TeamStatusControllerD
     }
   }
 
-  function startSession(ctx: ExtensionContext): void {
-    generation += 1;
-    const sessionId = ctx.sessionManager.getSessionId();
-    const sessionFile = ctx.sessionManager.getSessionFile();
+  function startSession(ctx: ExtensionContext): Promise<void> {
+    // 幂等地拆除上一代会话（重复 session_start 不得泄漏 timer/overlay/adapters），
+    // 之后再分配新状态；绝不在新会话分配后拆除。
+    return teardown().then(() => {
+      generation += 1;
+      const sessionId = ctx.sessionManager.getSessionId();
+      const sessionFile = ctx.sessionManager.getSessionFile();
 
-    activeCtx = ctx;
-    currentSessionId = sessionId;
-    runtime = createRuntimeState({
-      sessionId,
-      sessionFile,
-      writerId,
-      writerPid,
-      now: now(),
+      activeCtx = ctx;
+      currentSessionId = sessionId;
+      runtime = createRuntimeState({
+        sessionId,
+        sessionFile,
+        writerId,
+        writerPid,
+        now: now(),
+      });
+
+      const rt = runtime;
+      subagentsAdapter = createPiSubagentsAdapter({
+        events: pi.events,
+        runtime: rt,
+        now,
+        randomUUID,
+        onChanged: () => {
+          dirty = true;
+        },
+      });
+      piWebAdapter = createPiWebAgentAdapter({
+        runtime: rt,
+        now,
+        onChanged: () => {
+          dirty = true;
+        },
+      });
+      overlayManager = createTuiOverlayManager({
+        getAggregate: () => lastAggregate ?? emptyAggregate(sessionId, now()),
+        onError: (error) => reportDiagnostic("overlay", error),
+      });
+
+      isWriter = false;
+      dirty = false;
+      nextWriteAt = 0;
+      panelMode = "auto";
+      lastAggregate = undefined;
+
+      timerHandle = timers.setInterval(() => tick(), OBSERVER_POLL_MS);
+      timerActive = true;
+
+      // 规格 §9.3：session_start 做一次有界 GC（fire-and-forget，失败仅诊断）。
+      void guardAsync("store.gc", () => store.gc());
     });
-
-    const rt = runtime;
-    subagentsAdapter = createPiSubagentsAdapter({
-      events: pi.events,
-      runtime: rt,
-      now,
-      randomUUID,
-      onChanged: () => {
-        dirty = true;
-      },
-    });
-    piWebAdapter = createPiWebAgentAdapter({
-      runtime: rt,
-      now,
-      onChanged: () => {
-        dirty = true;
-      },
-    });
-    overlayManager = createTuiOverlayManager({
-      getAggregate: () => lastAggregate ?? emptyAggregate(sessionId, now()),
-      onError: (error) => reportDiagnostic("overlay", error),
-    });
-
-    isWriter = false;
-    dirty = false;
-    nextWriteAt = 0;
-    panelMode = "auto";
-    lastAggregate = undefined;
-
-    timerHandle = timers.setInterval(() => tick(), OBSERVER_POLL_MS);
-    timerActive = true;
-
-    // 规格 §9.3：session_start 做一次有界 GC（fire-and-forget，失败仅诊断）。
-    void guardAsync("store.gc", () => store.gc());
   }
 
   async function teardown(ctx?: ExtensionContext): Promise<void> {
@@ -383,9 +387,7 @@ export function registerTeamStatus(pi: ExtensionAPI, deps: TeamStatusControllerD
 
   // ---------- 事件注册 ----------
 
-  pi.on("session_start", (_event, ctx) => {
-    guard("session_start", () => startSession(ctx));
-  });
+  pi.on("session_start", (_event, ctx) => guardAsync("session_start", () => startSession(ctx)));
 
   pi.on("session_shutdown", (_event, ctx) => guardAsync("session_shutdown", () => teardown(ctx)));
 
@@ -393,8 +395,13 @@ export function registerTeamStatus(pi: ExtensionAPI, deps: TeamStatusControllerD
     guard("tool_execution_start", () => {
       const rt = runtime;
       if (!rt) return;
-      if (!isWriter && (event.toolName === "subagent" || event.toolName === "Agent")) {
-        promoteToWriter(rt, DEFAULT_LEADER_TITLE);
+      if (!isWriter) {
+        const args = (event as { args?: { action?: unknown } }).args;
+        const isAgentStart = event.toolName === "Agent";
+        const isSubagentDispatch = event.toolName === "subagent" && args?.action === undefined;
+        if (isAgentStart || isSubagentDispatch) {
+          promoteToWriter(rt, DEFAULT_LEADER_TITLE);
+        }
       }
       subagentsAdapter?.onToolStart(event);
       piWebAdapter?.onToolStart(event);

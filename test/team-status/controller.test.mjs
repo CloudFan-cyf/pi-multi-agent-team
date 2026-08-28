@@ -363,10 +363,49 @@ test("session_start polls once per second and session_shutdown clears every surf
   assert.deepEqual(ui.widgetCalls.at(-1), ["team-status", undefined, undefined]);
 });
 
+test("repeated session_start without shutdown tears down the old session first", async () => {
+  const { clock, store, pi, ui, handle, startSession } = makeHarness({ mode: "tui" });
+  await startSession();
+  await pi.runCommand("team-panel", "show", ui);
+  handle.activateTeam(ui, "Team 协作模式");
+  await clock.tickAsync(TICK_MS);
+  assert.equal(ui.customCalls.length, 1);
+  assert.equal(store.writeCalls.length, 1);
+
+  await startSession(); // 第二次 session_start，未经 shutdown
+
+  assert.equal(clock.activeTimerCount(), 1); // timer 不泄漏：仍只有一个
+  assert.equal(ui.doneValues.length, 1); // 旧 overlay 已 dispose（done(null)）
+  assert.equal(ui.doneValues[0], null);
+  assert.equal(store.removeCalls.length, 1); // 旧会话 shard 已移除
+  assert.deepEqual(store.removeCalls[0], [SESSION_ID, store.writeCalls[0].writerId]);
+
+  await clock.tickAsync(TICK_MS); // 最新 generation（observer）独自投影/写
+  assert.equal(store.writeCalls.length, 1); // 第二次会话不再写
+  assert.equal(ui.customCalls.length, 1); // auto + 空聚合不再挂新 overlay
+});
+
 test("an observed local dispatch promotes observer to writer", async () => {
   const { clock, store, pi, ui, startSession } = makeHarness({ mode: "tui" });
   await startSession();
   await pi.emit("tool_execution_start", toolStart("subagent", "call-1", { agent: "executor", task: "Implement" }), ui);
+  await clock.tickAsync(2 * TICK_MS);
+  assert.equal(store.writeCalls.length, 1);
+  assert.equal(store.writeCalls[0].members.some((m) => m.role === "leader"), true);
+});
+
+test("management subagent tool start with args.action does not promote observer to writer", async () => {
+  const { clock, store, pi, ui, startSession } = makeHarness({ mode: "rpc" });
+  await startSession();
+  await pi.emit("tool_execution_start", toolStart("subagent", "call-mgmt", { action: "spawn", target: "executor" }), ui);
+  await clock.tickAsync(2 * TICK_MS);
+  assert.equal(store.writeCalls.length, 0);
+});
+
+test("pi-web Agent tool start still promotes observer to writer", async () => {
+  const { clock, store, pi, ui, startSession } = makeHarness({ mode: "tui" });
+  await startSession();
+  await pi.emit("tool_execution_start", toolStart("Agent", "call-agent", { subagent_type: "executor", prompt: "Implement" }), ui);
   await clock.tickAsync(2 * TICK_MS);
   assert.equal(store.writeCalls.length, 1);
   assert.equal(store.writeCalls[0].members.some((m) => m.role === "leader"), true);
