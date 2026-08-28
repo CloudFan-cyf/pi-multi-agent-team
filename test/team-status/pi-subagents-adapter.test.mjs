@@ -534,6 +534,95 @@ test("async members prefer artifact step agent/model and keep last two output li
   }
 });
 
+test("synthetic step:N node rejects a non-empty workflowKey artifact; falls back to public node.label and currentTool", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "team-status-synthetic-reject-"));
+  const snapshot = {
+    ...asyncSnapshot,
+    runs: [{
+      id: "async-run",
+      kind: "workflow",
+      label: "executor",
+      state: "running",
+      children: [
+        { id: "step:0", kind: "step", label: "reviewer", state: "running", activity: { currentTool: "bash" } },
+      ],
+    }],
+  };
+  try {
+    writeFileSync(join(dir, "status.json"), JSON.stringify({
+      runId: "async-run",
+      steps: [{
+        index: 0,
+        agent: "deep-researcher",
+        workflowKey: "wrong-key",
+        model: "gpt-5.6-sol",
+        currentTool: "web_search",
+        recentOutput: ["wrong child output"],
+      }],
+    }));
+    const bus = createTestBus();
+    installBridge(bus, { asyncSnapshot: snapshot });
+    const runtime = newRuntime();
+    const adapter = newAdapter(bus, runtime);
+    adapter.onToolEnd(toolEnd("subagent", "call-synthetic-reject", {
+      content: [{ type: "text", text: "detached" }],
+      details: { mode: "workflow", runId: "async-run", asyncId: "async-run", asyncDir: dir, results: [] },
+    }));
+    await adapter.refreshAsync();
+    const member = onlyChild(runtime);
+    assert.equal(member.role, "reviewer");
+    assert.equal(member.agent, "reviewer");
+    assert.equal(member.model, undefined);
+    assert.equal(member.title, "reviewer");
+    assert.deepEqual(member.preview, ["Running bash"]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("childless root node keeps positional artifact enrichment even with a non-matching workflowKey", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "team-status-root-fallback-"));
+  const snapshot = {
+    ...asyncSnapshot,
+    runs: [{
+      id: "async-run",
+      kind: "workflow",
+      label: "drivers-risk-fallback",
+      state: "running",
+    }],
+  };
+  try {
+    writeFileSync(join(dir, "status.json"), JSON.stringify({
+      runId: "async-run",
+      steps: [{
+        index: 0,
+        agent: "executor",
+        workflowKey: "internal-step-key",
+        model: "gpt-5.6-sol",
+        currentTool: "bash",
+        recentOutput: ["artifact output one", "artifact output two"],
+      }],
+    }));
+    const bus = createTestBus();
+    installBridge(bus, { asyncSnapshot: snapshot });
+    const runtime = newRuntime();
+    const adapter = newAdapter(bus, runtime);
+    adapter.onToolEnd(toolEnd("subagent", "call-root-fallback", {
+      content: [{ type: "text", text: "detached" }],
+      details: { mode: "workflow", runId: "async-run", asyncId: "async-run", asyncDir: dir, results: [] },
+    }));
+    await adapter.refreshAsync();
+    const member = onlyChild(runtime);
+    assert.equal(member.role, "executor");
+    assert.equal(member.agent, "executor");
+    assert.equal(member.model, "gpt-5.6-sol");
+    assert.equal(member.title, "async-run");
+    assert.deepEqual(member.preview, ["artifact output one", "artifact output two"]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 // ---------- RPC 客户端 ----------
 
 test("status subscribes before emitting and unsubscribes on reply", async () => {

@@ -782,13 +782,15 @@ export function createPiSubagentsAdapter(options: PiSubagentsAdapterOptions): Pi
 
   /**
    * artifact workflowKey 关联守卫：status.json step 携带非空 workflowKey 时，必须与公开
-   * node.id 一致（合成 `step:N` id 无 workflowKey，跳过）。顺序错位 → 丢弃整份投影，
-   * 回退到公开 node.label / currentTool。仅作防御，不改数组索引这一唯一选择机制。
+   * node.id 一致。仅对 step 节点做关联；childless 根节点（subagent/workflow）走「位置
+   * 索引」富集，直接接受 steps[0]。合成 `step:N` id 无真实 workflowKey，遇非空 hint 即
+   * 保守拒绝。顺序错位 → 丢弃整份投影，回退到公开 node.label / currentTool。
    */
   function artifactCorrelationMatches(projection: AsyncStepProjection, node: AsyncStatusNodeV1): boolean {
     const hint = projection.workflowKey;
     if (!hint) return true;
-    if (SYNTHETIC_STEP_ID_PATTERN.test(node.id)) return true;
+    if (node.kind !== "step") return true;
+    if (SYNTHETIC_STEP_ID_PATTERN.test(node.id)) return false;
     return hint === node.id;
   }
 

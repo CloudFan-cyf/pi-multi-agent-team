@@ -137,8 +137,9 @@ role 被错误降级为 `other`、model 缺失。
 | 公开 step `node.id` 即 `workflowKey`（缺省 `runId`，再缺省 `step:N`） | `async-status-snapshot.ts:155` | ✅ 关联提示可验证 |
 
 尽管如此，仍增加防御：`AsyncStepProjection` 携带净化后的可选 `workflowKey`（仅内存，
-绝不写入 Team DTO）。当非空 `workflowKey` 与公开 node `id` 不一致（且 node id 非合成
-`step:N`）时，丢弃整份 artifact 投影，回退到公开 node `label`/`currentTool`；关联提示缺失
-时仍接受已验证的位置不变量（兼容旧/plain run 形状）。合成/root 回退路径不变。
+绝不写入 Team DTO）。仅对 step 节点做关联：当非空 `workflowKey` 与公开 node `id` 不一致
+（合成 `step:N` id 因无真实 workflowKey 一律视为不一致，保守拒绝）时，丢弃整份 artifact
+投影，回退到公开 node `label`/`currentTool`；childless 根节点（subagent/workflow）与关联提示
+缺失时仍接受已验证的位置不变量（兼容旧/plain run 形状）。root 回退富集路径不变。
 
 Gate 5–8 与真实 TUI/stock pi-web 复测仍保持 **⛔ PENDING RE-TEST**，未标记为 PASS。

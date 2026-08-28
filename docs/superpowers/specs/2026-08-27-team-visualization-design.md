@@ -199,9 +199,10 @@ Foreground 成员只使用父进程的工具事件，不与 Fleet DTO 做逐条 
 - `asyncSnapshot` 提供状态、树形 step、`currentTool`、turn/tool count 和时间。
 - async 成员的 role/agent/model 优先取 artifact step 的 `agent`/`model`（有界 status.json 投影），
   缺失时回退到公开 node `label`；title 仍用稳定 node `id`。
-- artifact step 投影携带净化后的 `workflowKey` 关联提示（绝不写入 Team DTO）：当非空 `workflowKey`
-  与公开 node `id` 不一致（且 node id 非合成 `step:N`）时，丢弃整份投影，回退到公开 node
-  `label` / `currentTool`。数组索引仍是唯一选择机制，关联提示只用于防御顺序错位。
+- artifact step 投影携带净化后的 `workflowKey` 关联提示（绝不写入 Team DTO）：仅对 step 节点做关联，
+  当非空 `workflowKey` 与公开 node `id` 不一致（合成 `step:N` id 因无真实 workflowKey 一律视为不一致）
+  时，丢弃整份投影，回退到公开 node `label` / `currentTool`；childless 根节点（subagent/workflow）按
+  位置索引直接接受 `steps[0]`。数组索引仍是唯一选择机制，关联提示只用于防御顺序错位。
 - 调用时的 workflow key/child index 与 task packet 仍是标题和 Team 角色映射来源。
 - `fleetStatus` 只用于 active 总数、capacity 和 omitted 提示，不作为成员身份、标题或 preview 的 join 数据源；当前 v1 的 `goal` 不能假设存在。
 - artifact 或子会话尾部仅可作为 preview 的可选补充，不参与成员身份或 active 判定。
