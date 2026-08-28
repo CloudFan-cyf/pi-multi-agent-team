@@ -143,3 +143,36 @@ role 被错误降级为 `other`、model 缺失。
 缺失时仍接受已验证的位置不变量（兼容旧/plain run 形状）。root 回退富集路径不变。
 
 Gate 5–8 与真实 TUI/stock pi-web 复测仍保持 **⛔ PENDING RE-TEST**，未标记为 PASS。
+
+## pi-web 0.8.9 ANSI 乱码修复波（2026-08-27）
+
+### 0.8.9 根因（只读证据）
+
+stock pi-web 0.8.9 的 `package.json`（`C:/Users/ChenYunfan/AppData/Roaming/npm/node_modules/@agegr/pi-web/package.json`）
+版本为 `0.8.9`，依赖不含 `ansi_up`；其 `.next` 构建产物中也搜不到 `AnsiText` 组件，
+`ExtensionWidgets` 直接以纯文本透传 `setWidget` 的 lines。因此此前 Web 头行注入的有界
+标准 SGR（`\x1b[..m`）会原样显示为乱码。
+
+上游 0.8.11 checkout（`D:/Github projects/pi-dev/pi-web`，`package.json` 第 3 行
+`"version": "0.8.11"`）的 `components/ExtensionWidgets.tsx:134` 才使用 `AnsiText` 渲染
+widget 内容；但扩展不依赖该能力。
+
+### 修复
+
+仅 Web Widget（`extensions/team-status/web-widget.ts`）移除 ANSI SGR，改用用户批准的
+emoji + 状态 emoji：
+
+- 角色：👑 Leader / 🔍 Researcher / ⚔️ Challenger / ⚙️ Executor / ✅ Reviewer / 🤖 Other；
+- 状态：⚪ idle / 🔵 starting / 🟢 running / ✅ completed / 🔴 failed / ⚫ stopped / 🟡 stale；
+- 紧凑头部：`{角色emoji} {Role} · {状态emoji} {state}[ · {model}]`，无 model 时无尾随分隔符；
+- 任意 widget 输出行均不含 ESC/C0/C1 控制码；status summary 保持纯文本现状。
+
+TUI overlay（`extensions/team-status/tui-overlay.ts`）继续使用宿主 Theme 语义色，其角色映射
+（◆ ⌕ ! › ✓ •）与生命周期未改动。
+
+### 复测状态（诚实记录）
+
+- 自动测试（`npm test`）已新增精确 emoji 映射、含/不含 model 头部、无控制码断言并转绿。
+- 真实 stock pi-web 0.8.9 与 0.8.11 的乱码复测、Gate 5–8 仍保持 **⛔ PENDING RE-TEST**，
+  未标记为 PASS。本轮未触碰 `~/.pi/agent/settings.json`，未启动/停止任何 pi-web 进程，
+  未改动只读上游 checkout。

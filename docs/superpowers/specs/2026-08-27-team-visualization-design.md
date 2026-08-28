@@ -347,29 +347,30 @@ stock `ExtensionWidgets` 行为是产品契约的一部分：
 - 扩展不控制或伪造默认展开状态；
 - 不承诺右侧栏或原生卡片 DOM。
 
-Web 身份主要依赖符号和文本标签。可选 ANSI SGR 颜色只能作为增强；即使宿主剥离颜色，内容仍须可辨认。
+Web 身份主要依赖 emoji 与文本标签，不注入 ANSI SGR 颜色。stock pi-web 0.8.9 不解析 ANSI（无 ansi_up 依赖，直接透传会显示为乱码）；0.8.11 的 ExtensionWidgets 经 AnsiText 渲染，但扩展不依赖该能力。emoji 与文字标签在 0.8.9 与 0.8.11 上均可辨。
 
 ## 12. 视觉语言
 
 角色默认标识：
 
-| 角色 | 图标 | TUI 语义色 | 无颜色降级 |
-|---|---|---|---|
-| Leader | `◆` | accent | `Leader` 标签 |
-| Researcher | `⌕` | link/type | `Researcher` 标签 |
-| Challenger | `!` | warning | `Challenger` 标签 |
-| Executor | `›` | success | `Executor` 标签 |
-| Reviewer | `✓` | accent/type | `Reviewer` 标签 |
-| Other | `•` | muted | agent/profile 名 |
+| 角色 | TUI 图标 | TUI 语义色 | Web emoji | 无颜色降级 |
+|---|---|---|---|---|
+| Leader | `◆` | accent | `👑` | `Leader` 标签 |
+| Researcher | `⌕` | link/type | `🔍` | `Researcher` 标签 |
+| Challenger | `!` | warning | `⚔️` | `Challenger` 标签 |
+| Executor | `›` | success | `⚙️` | `Executor` 标签 |
+| Reviewer | `✓` | accent/type | `✅` | `Reviewer` 标签 |
+| Other | `•` | muted | `🤖` | agent/profile 名 |
 
-图标必须配合文字，不能只靠颜色表达身份或状态。
+图标/emoji 必须配合文字，不能只靠颜色或符号表达身份或状态。
 
 紧凑头行统一为 `{icon} {角色标签} · {state}[ · {model}]`：model 存在时追加一个 ` · `
-分隔符与 model 文本，不存在时不追加多余分隔符。TUI 中 model 用 muted 色；
-stock pi-web 仅对角色段与状态段注入有界标准 SGR（完整复位，经 AnsiText 渲染），
-角色映射 leader 品红、researcher 青、challenger 黄、executor 绿、reviewer 蓝、other 弱化，
-状态映射 running/completed 绿、failed 红、stale 黄、starting 青、stopped/idle 弱化；
-单行状态摘要保持纯文本无颜色。
+分隔符与 model 文本，不存在时不追加多余分隔符。TUI 中 model 用 muted 色，角色/状态
+用宿主 Theme 语义色（见上表，TUI 映射与生命周期不变）。stock pi-web 的角色/状态段改用
+用户批准的 emoji 且不注入 ANSI SGR：角色映射 👑 Leader / 🔍 Researcher / ⚔️ Challenger /
+⚙️ Executor / ✅ Reviewer / 🤖 Other；状态映射 ⚪ idle / 🔵 starting / 🟢 running /
+✅ completed / 🔴 failed / ⚫ stopped / 🟡 stale。根因：0.8.9 不解析 ANSI（无 ansi_up），
+0.8.11 的 AnsiText 亦非依赖项；单行状态摘要保持纯文本无颜色。
 
 TUI 卡片示意：
 
@@ -498,7 +499,7 @@ git:ssh://git@ssh.github.com:443/CloudFan-cyf/pi-multi-agent-team.git
 1. stock pi-web 的详细列表可能折叠，需要用户点击；不会显示为右侧栏。
 2. 父 Pi 进程退出后仍运行的 detached child 不在 v1 持续追踪范围；旧 shard 会先 stale 后消失。
 3. preview 持久化在本地用户目录；best-effort 脱敏不是安全保证，Windows 文件权限依赖继承 ACL。
-4. Web 颜色是渐进增强，符号和文字才是可靠身份标识。
+4. Web 使用 emoji + 文字标签作身份标识，不注入 ANSI SGR（0.8.9 不解析 ANSI、0.8.11 的 AnsiText 非依赖项）；emoji 和文字才是可靠身份标识。
 5. overlay 是实验性 API；通过严格生命周期清理降低风险，但未来 Pi API 变化可能需要适配。
 6. pi-web 只有在对应会话建立 RPC wrapper、绑定扩展后才会投影 Widget。
 7. pi-web 内建 `Agent` 的 partial details 不是跨项目标准；adapter 必须防御字段缺失并保持降级。

@@ -3,15 +3,15 @@
  *
  * 纯文本渲染 + 极窄的 Extension UI 投影：
  * - renderStatusSummary：单行摘要（leader 数 + 各非零状态数），setStatus 常驻展示（纯文本无颜色）；
- * - renderWebWidgetLines：成员块（图标 + 角色标签 + 状态 + 标题 + 最多两行 preview），
- *   头行角色/状态段注入有界标准 SGR（stock AnsiText 渲染，段后完整复位），
+ * - renderWebWidgetLines：成员块（角色 emoji + 角色标签 + 状态 emoji + 状态 + 标题 + 最多两行 preview），
+ *   任意输出行均不含 ANSI/ESC/C0/C1 控制码（stock pi-web 0.8.9 不解析 ANSI，直接透传会乱码），
  *   保持聚合给定的 Leader-first 顺序，成员块之间仅用空行分隔（末成员后不尾随空行）；
  * - projectWebWidget / clearWebWidget：仅在 ctx.mode === "rpc"（stock pi-web）时
  *   写 setStatus/setWidget；其他模式一律 no-op。
  *
  * 模块边界：只 import types.ts 的类型；不 import pi-web 或任何 pi-coding-agent
- * 运行时代码；不改写 aggregate/member 引用。颜色仅是渐进增强——符号与文字
- * 标签才是可靠身份标识。
+ * 运行时代码；不改写 aggregate/member 引用。emoji 与文字标签是可靠身份标识，
+ * 不依赖宿主 ANSI 解析能力（0.8.9 无 ansi_up、0.8.11 的 AnsiText 也非依赖项）。
  */
 import type { TeamAggregateV1, TeamMemberState, TeamMemberStatusV1, TeamRole } from "./types.ts";
 
@@ -32,14 +32,14 @@ const STATE_ORDER: readonly TeamMemberState[] = [
   "stale",
 ];
 
-/** 角色 → 图标（设计规格 §12；颜色只是增强，符号 + 文字才是可靠身份标识）。 */
+/** 角色 → emoji（用户批准；文字标签才是可靠身份标识，emoji 仅作视觉增强）。 */
 const ROLE_ICONS: Record<TeamRole, string> = {
-  leader: "◆",
-  "deep-researcher": "⌕",
-  challenger: "!",
-  executor: "›",
-  reviewer: "✓",
-  other: "•",
+  leader: "👑",
+  "deep-researcher": "🔍",
+  challenger: "⚔️",
+  executor: "⚙️",
+  reviewer: "✅",
+  other: "🤖",
 };
 
 /** 角色 → 默认标签；other 优先显示成员 agent 名（设计规格 §12「agent/profile 名」）。 */
@@ -52,39 +52,21 @@ const ROLE_LABELS: Record<TeamRole, string> = {
   other: "Other",
 };
 
-/** Web 头行颜色：有界标准 SGR；stock pi-web 经 AnsiText 渲染，每段完整复位。 */
-const ANSI_RESET = "\x1b[0m";
-
-/** 角色 SGR：leader 品红、researcher 青、challenger 黄、executor 绿、reviewer 蓝、other 弱化。 */
-const ROLE_ANSI: Record<TeamRole, string> = {
-  leader: "35",
-  "deep-researcher": "36",
-  challenger: "33",
-  executor: "32",
-  reviewer: "34",
-  other: "2",
+/** 状态 → emoji（用户批准；文字标签才是可靠身份标识）。 */
+const STATE_ICONS: Record<TeamMemberState, string> = {
+  idle: "⚪",
+  starting: "🔵",
+  running: "🟢",
+  completed: "✅",
+  failed: "🔴",
+  stopped: "⚫",
+  stale: "🟡",
 };
 
-/** 状态 SGR：running/completed 绿、failed 红、stale 黄、starting 青、stopped/idle 弱化。 */
-const STATE_ANSI: Record<TeamMemberState, string> = {
-  idle: "2",
-  starting: "36",
-  running: "32",
-  completed: "32",
-  failed: "31",
-  stopped: "2",
-  stale: "33",
-};
-
-/** 用完整 SGR 复位包裹单段颜色（模型段保持无色，仅角色/状态段上色）。 */
-function sgr(code: string, text: string): string {
-  return `\x1b[${code}m${text}${ANSI_RESET}`;
-}
-
-/** 紧凑头行：`{icon} {角色标签} · {state}[ · {model}]`；无 model 时不追加多余分隔符。 */
+/** 紧凑头行：`{角色emoji} {角色标签} · {状态emoji} {state}[ · {model}]`；无 model 时不追加多余分隔符。 */
 function compactHeader(member: TeamMemberStatusV1): string {
-  const roleSegment = sgr(ROLE_ANSI[member.role], `${roleIcon(member.role)} ${roleLabel(member)}`);
-  const stateSegment = sgr(STATE_ANSI[member.state], member.state);
+  const roleSegment = `${roleIcon(member.role)} ${roleLabel(member)}`;
+  const stateSegment = `${stateIcon(member.state)} ${member.state}`;
   const parts = [roleSegment, stateSegment];
   if (member.model) parts.push(member.model);
   return parts.join(" · ");
@@ -124,8 +106,8 @@ export function renderStatusSummary(aggregate: TeamAggregateV1): string {
 
 /**
  * Widget 行：每名成员渲染
- *   头行 `{icon} {角色标签} · {state}[ · {model}]`（角色/状态段注入有界 SGR 并复位，
- *   model 存在时以纯文本追加，无 model 时不追加多余分隔符）
+ *   头行 `{角色emoji} {角色标签} · {状态emoji} {state}[ · {model}]`（全程纯文本、
+ *   不含 ANSI/C0/C1 控制码，model 存在时以纯文本追加，无 model 时不追加多余分隔符）
  *   标题行（若有）与最多 MAX_WIDGET_PREVIEW_LINES 行 preview（各缩进两空格）。
  * 成员块之间用空行分隔，末成员后无空行。保持聚合给定的 Leader-first 顺序。
  * `now` 参数为接口契约保留（供后续时长渲染扩展），当前渲染不含时长。
@@ -167,6 +149,10 @@ export function clearWebWidget(ctx: WebWidgetContext): void {
 
 function roleIcon(role: TeamRole): string {
   return ROLE_ICONS[role];
+}
+
+function stateIcon(state: TeamMemberState): string {
+  return STATE_ICONS[state];
 }
 
 function roleLabel(member: TeamMemberStatusV1): string {
