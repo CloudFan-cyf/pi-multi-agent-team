@@ -91,6 +91,16 @@ const defaultTimers: TimersLike = {
   clearInterval: (handle) => clearInterval(handle as ReturnType<typeof setInterval>),
 };
 
+/** 生产默认诊断 sink：限频由 reportDiagnostic 保证，这里只负责可观测（console.warn + 前缀）。 */
+function defaultDiagnosticSink(message: string, error?: unknown): void {
+  const detail = error instanceof Error
+    ? `${error.message}${error.stack ? `\n${error.stack}` : ""}`
+    : error !== undefined
+      ? String(error)
+      : "";
+  console.warn(`[team-status] ${message}${detail ? `: ${detail}` : ""}`);
+}
+
 // ---------- 辅助 ----------
 
 function isTerminalState(state: TeamMemberState): boolean {
@@ -131,7 +141,7 @@ export function registerTeamStatus(pi: ExtensionAPI, deps: TeamStatusControllerD
   const randomUUID = deps.randomUUID ?? nodeRandomUUID;
   const timers = deps.timers ?? defaultTimers;
   const storeFactory = deps.storeFactory ?? ((options) => new TeamShardStore(options));
-  const onDiagnostic = deps.onDiagnostic ?? (() => {});
+  const onDiagnostic = deps.onDiagnostic ?? defaultDiagnosticSink;
 
   const store = storeFactory({ agentDir: deps.agentDir, now, randomUUID });
   const writerId = toPortableWriterId(randomUUID());

@@ -53,3 +53,42 @@
   （无抢焦点 `unfocus()`、`TUI_MIN_COLUMNS` 阈值、30s retention、shutdown 清理）。
 - **Gate 4 的「点击 team-status」**：headless 环境无法真实点击浏览器 widget trigger，
   但 `extensionWidgets` 返回的 `lines` 内容即点击后展开的详情，已作为等价证据记录。
+
+## 最终复审修复波（2026-08-27）
+
+本轮为最终复审的单次修复波，仅处理两项：生产诊断可观测性（Finding 1）与
+pi-web Agent adapter 契约审计（Finding 2）。本轮未尝试也未将 Gate 5–8 标记为 PASS——
+它们是真实 TUI 交互的人工视觉门，仍保持 `⛔ NOT RUN` 待办；本轮未触碰用户 settings
+（`~/.pi/agent/settings.json`），未启动/停止任何 pi-web 实例。
+
+## pi-web 0.8.x 契约审计（受支持基线）
+
+`extensions/team-status/pi-web-agent-adapter.ts` 的承载常量/字段名已对照只读上游
+pi-web 源码 checkout（`D:/Github projects/pi-dev/pi-web`，`@agegr/pi-web@0.8.11`，
+`package.json` 第 3 行）逐项核对，**全部匹配**，无需改动生产代码。以下为精确证据。
+
+| Adapter 常量/字段 | 上游源码位置（文件:行） | 观察 |
+|---|---|---|
+| 工具名 `Agent` | `lib/subagent-extension.ts:111`（`name: "Agent"`） | ✅ 匹配 |
+| 工具参数 `subagent_type` | `lib/subagent-extension.ts:122` | ✅ 匹配 |
+| 工具参数 `prompt` | `lib/subagent-extension.ts:123` | ✅ 匹配 |
+| 工具参数 `description` | `lib/subagent-extension.ts:128` | ✅ 匹配 |
+| 工具参数 `run_in_background` | `lib/subagent-extension.ts:129` | ✅ 匹配 |
+| details kind `pi-web-subagent` | `lib/subagent-extension.ts:21`（`SubagentToolDetails.kind`） | ✅ 匹配 |
+| details `sessionId` | `lib/subagent-extension.ts:22` | ✅ 匹配 |
+| details `profile` | `lib/subagent-extension.ts:23` | ✅ 匹配 |
+| details `status` | `lib/subagent-extension.ts:25` | ✅ 匹配 |
+| details `runInBackground`（camelCase） | `lib/subagent-extension.ts:26` | ✅ 匹配 |
+| 后台通知自定义消息 `pi-web:subagent-notification` | `lib/subagent-runtime.ts:390`（`notifyParent` 内 `sendCustomMessage.customType`） | ✅ 匹配 |
+| 通知 `content` | `lib/subagent-runtime.ts:391`（`subagentFinalText(run)`） | ✅ 匹配 |
+| 通知 `details` | `lib/subagent-runtime.ts:393`（`subagentToolDetails(run)`） | ✅ 匹配 |
+
+备注：
+
+- 上游 `SubagentToolDetails` 还含 `description`/`createdAt`/`completedAt?`/`error?`
+  （`lib/subagent-extension.ts:24,27,28,29`），adapter 仅在可读时使用 `profile`/`description`，
+  其余按规格 §7.3 作为可选补充，字段缺失时降级为标题 + 状态，不解析 pi-web 内部 HTTP。
+- `notifyParent` 的 `content` 是 `subagentFinalText(run)`（`lib/subagent-extension.ts:86-94`），
+  对 `completed` 返回 `run.result`，因此 adapter 的 `notificationPreview` 直接读 `message.content`
+  即可拿到终态文本，符合现有实现。
+- 本轮未修改只读上游 checkout。

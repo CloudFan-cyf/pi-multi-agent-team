@@ -153,7 +153,7 @@ function makeStore() {
   const writeCalls = [];
   const removeCalls = [];
   const gcCalls = [];
-  const state = { shards: [], failNextRead: false };
+  const state = { shards: [], failNextRead: false, failNextWrite: false };
   return {
     readCalls,
     writeCalls,
@@ -169,6 +169,10 @@ function makeStore() {
       return [...state.shards];
     },
     async write(record) {
+      if (state.failNextWrite) {
+        state.failNextWrite = false;
+        throw new Error("simulated write failure");
+      }
       writeCalls.push(record);
     },
     async remove(sessionId, writerId) {
@@ -313,8 +317,9 @@ function makePi() {
 
 /**
  * 组装 harness：假时钟 + 假 store + 注册 controller；返回 handle 与 startSession。
+ * omitDiagnostic=true 时不传 onDiagnostic，模拟生产注册（index.ts）省略 sink 的情形。
  */
-function makeHarness({ mode = "rpc" } = {}) {
+function makeHarness({ mode = "rpc", omitDiagnostic = false } = {}) {
   const clock = makeClock();
   const store = makeStore();
   const pi = makePi();
@@ -325,7 +330,9 @@ function makeHarness({ mode = "rpc" } = {}) {
     randomUUID: sequenceUuid(),
     timers: clock,
     storeFactory: () => store,
-    onDiagnostic: (message, error) => pi.diagnostics.push([message, String(error ?? "")]),
+    ...(omitDiagnostic
+      ? {}
+      : { onDiagnostic: (message, error) => pi.diagnostics.push([message, String(error ?? "")]) }),
   };
   const handle = registerTeamStatus(pi, deps);
   async function startSession(ctx = ui) {
@@ -524,6 +531,43 @@ test("/team-panel rejects unknown input without changing mode", async () => {
   assert.deepEqual(ui.notifyCalls.at(-1), ["用法: /team-panel show|hide|auto", "error"]);
   await clock.tickAsync(TICK_MS); // 模式应仍为 show，投影继续（而非 auto 清空）
   assert.deepEqual(ui.statusCalls.at(-1), ["team-status", "◆ Team"]);
+});
+
+// ---------- 生产诊断可观测性（省略 sink 不得静默吞掉诊断） ----------
+
+test("omitted diagnostic sink logs guarded failures with [team-status] prefix without throwing", async () => {
+  const warnings = [];
+  const originalWarn = console.warn;
+  console.warn = (...args) => warnings.push(args.join(" "));
+  try {
+    const { clock, store, startSession } = makeHarness({ mode: "rpc", omitDiagnostic: true });
+    await startSession();
+    store.state.failNextRead = true;
+    await clock.tickAsync(TICK_MS); // 不得抛出
+    assert.ok(
+      warnings.some((line) => line.includes("[team-status]") && line.includes("store.read")),
+      `expected a [team-status] store.read diagnostic, got: ${JSON.stringify(warnings)}`,
+    );
+  } finally {
+    console.warn = originalWarn;
+  }
+});
+
+test("diagnostics are rate-limited to one per second", async () => {
+  const warnings = [];
+  const originalWarn = console.warn;
+  console.warn = (...args) => warnings.push(args.join(" "));
+  try {
+    const { clock, store, ui, handle, startSession } = makeHarness({ mode: "rpc", omitDiagnostic: true });
+    await startSession();
+    handle.activateTeam(ui, "Team 协作模式"); // 晋升 writer，使本 tick 同时发生 write + read
+    store.state.failNextWrite = true;
+    store.state.failNextRead = true;
+    await clock.tickAsync(TICK_MS);
+    assert.equal(warnings.length, 1, `expected exactly 1 diagnostic, got: ${JSON.stringify(warnings)}`);
+  } finally {
+    console.warn = originalWarn;
+  }
 });
 
 // ---------- 投影面隔离 ----------
