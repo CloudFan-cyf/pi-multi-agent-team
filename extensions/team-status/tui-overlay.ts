@@ -11,6 +11,7 @@
  *   绝不把 handle.hide() 作为正常关闭路径（handle.hide 移除 TUI 条目但不解析 Promise）；
  * - 每次 show() 创建全新组件，并使用单调递增 generation 守卫：
  *   旧 Promise 的 finally 仅在 generation 仍匹配时清理引用，避免清掉新 overlay；
+ * - show() 在已有 active overlay（mounting 或 visible）时幂等返回，绝不二次调用 custom；
  * - refresh() 请求重绘；所有行按给定宽度截断（颜色由 ThemeLike.fg 自行包裹与复位）。
  */
 import {
@@ -233,7 +234,8 @@ export interface TuiOverlayManager {
 }
 
 /**
- * 创建非抢占式 TUI overlay 管理器。show() 只在 tui 模式创建 overlay；
+ * 创建非抢占式 TUI overlay 管理器。show() 只在 tui 模式创建 overlay，且在已有
+ * active overlay（mounting 或 visible）时幂等返回，不会二次调用 custom；
  * hide()/dispose() 用 done(null) 正常关闭；generation 守卫防止旧 Promise 的
  * finally 清理掉更新一次的 overlay；dispose() 同步清空所有引用。
  */
@@ -246,6 +248,7 @@ export function createTuiOverlayManager(options: TuiOverlayManagerOptions): TuiO
   let handle: OverlayHandleLike | null = null;
   let component: TeamOverlayComponent | null = null;
   let requestRender: (() => void) | null = null;
+  let active = false;
 
   function clearReferences(): void {
     done = null;
@@ -264,6 +267,8 @@ export function createTuiOverlayManager(options: TuiOverlayManagerOptions): TuiO
   return {
     show(ctx) {
       if (ctx.mode !== "tui") return;
+      if (active) return;
+      active = true;
       const generationAtShow = ++generation;
 
       const promise = ctx.ui.custom<null>(
@@ -293,7 +298,10 @@ export function createTuiOverlayManager(options: TuiOverlayManagerOptions): TuiO
       promise
         .catch(onError ?? (() => {}))
         .finally(() => {
-          if (generation === generationAtShow) clearReferences();
+          if (generation === generationAtShow) {
+            clearReferences();
+            active = false;
+          }
         });
     },
 
@@ -303,12 +311,14 @@ export function createTuiOverlayManager(options: TuiOverlayManagerOptions): TuiO
 
     hide() {
       resolveDone();
+      active = false;
     },
 
     dispose() {
       generation += 1;
       resolveDone();
       clearReferences();
+      active = false;
     },
   };
 }

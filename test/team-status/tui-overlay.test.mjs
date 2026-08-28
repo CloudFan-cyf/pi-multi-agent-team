@@ -56,11 +56,12 @@ function visibleWidth(text) {
  * 记录 customCalls / doneValues / renderRequests / customPromises，并暴露
  * 最近一次 factory 产出的 component、done、handle 与 overlayOptions。
  */
-function overlayHarness({ mode = "tui", getAggregate } = {}) {
+function overlayHarness({ mode = "tui", getAggregate, deferFactory = false } = {}) {
   const customCalls = [];
   const doneValues = [];
   const renderRequests = [];
   const customPromises = [];
+  const pendingFactories = [];
   let latestComponent = null;
   let latestDone = null;
   let handle = null;
@@ -72,6 +73,27 @@ function overlayHarness({ mode = "tui", getAggregate } = {}) {
     },
   };
 
+  function runFactory(factory, options, done, call) {
+    const component = factory(tui, theme, {}, done);
+    latestComponent = component;
+    latestDone = done;
+    call.component = component;
+    call.done = done;
+    if (options?.overlay) {
+      handle = {
+        unfocusCalls: 0,
+        hideCalls: 0,
+        unfocus() {
+          this.unfocusCalls += 1;
+        },
+        hide() {
+          this.hideCalls += 1;
+        },
+      };
+      options.onHandle?.(handle);
+    }
+  }
+
   function custom(factory, options) {
     const promise = new Promise((resolve) => {
       let closed = false;
@@ -81,26 +103,22 @@ function overlayHarness({ mode = "tui", getAggregate } = {}) {
         doneValues.push(result);
         resolve(result);
       };
-      const component = factory(tui, theme, {}, done);
-      latestComponent = component;
-      latestDone = done;
-      customCalls.push({ factory, options, component, done });
-      if (options?.overlay) {
-        handle = {
-          unfocusCalls: 0,
-          hideCalls: 0,
-          unfocus() {
-            this.unfocusCalls += 1;
-          },
-          hide() {
-            this.hideCalls += 1;
-          },
-        };
-        options.onHandle?.(handle);
+      const call = { factory, options, component: null, done: null };
+      customCalls.push(call);
+      if (deferFactory) {
+        pendingFactories.push(() => runFactory(factory, options, done, call));
+      } else {
+        runFactory(factory, options, done, call);
       }
     });
     customPromises.push(promise);
     return promise;
+  }
+
+  function flush() {
+    const pending = pendingFactories.splice(0);
+    for (const run of pending) run();
+    return new Promise((resolve) => setImmediate(resolve));
   }
 
   return {
@@ -114,7 +132,7 @@ function overlayHarness({ mode = "tui", getAggregate } = {}) {
     get done() { return latestDone; },
     get overlayOptions() { return customCalls.at(-1)?.options.overlayOptions; },
     getAggregate: getAggregate ?? (() => aggregate([member()])),
-    flush: () => new Promise((resolve) => setImmediate(resolve)),
+    flush,
   };
 }
 
@@ -149,6 +167,40 @@ test("hide resolves custom through done and show creates a fresh component", asy
   assert.equal(harness.doneValues.at(-1), null);
   manager.show(harness.ctx);
   await harness.flush();
+  assert.notEqual(harness.component, first);
+});
+
+test("show is idempotent while visible: two shows before hide make one custom call", async () => {
+  const harness = overlayHarness();
+  const manager = createTuiOverlayManager({ getAggregate: harness.getAggregate, onError: assert.fail });
+  manager.show(harness.ctx);
+  const first = harness.component;
+  manager.show(harness.ctx); // 已可见 → 不得二次调用 custom
+  await harness.flush();
+  assert.equal(harness.customCalls.length, 1);
+  assert.equal(harness.component, first);
+  manager.hide();
+  assert.equal(harness.doneValues.at(-1), null);
+  manager.show(harness.ctx);
+  await harness.flush();
+  assert.equal(harness.customCalls.length, 2);
+  assert.notEqual(harness.component, first);
+});
+
+test("show is idempotent while mounting: repeated show before deferred factory runs makes one custom call", async () => {
+  const harness = overlayHarness({ deferFactory: true });
+  const manager = createTuiOverlayManager({ getAggregate: harness.getAggregate, onError: assert.fail });
+  manager.show(harness.ctx);
+  manager.show(harness.ctx); // 第一个 overlay 仍处于 mounting（factory 未执行）→ 不得二次调用 custom
+  assert.equal(harness.customCalls.length, 1);
+  await harness.flush(); // factory 此刻才执行 → component/done 可用
+  const first = harness.component;
+  assert.ok(first, "component should exist once the deferred factory runs");
+  manager.hide();
+  assert.equal(harness.doneValues.at(-1), null);
+  manager.show(harness.ctx);
+  await harness.flush();
+  assert.equal(harness.customCalls.length, 2);
   assert.notEqual(harness.component, first);
 });
 
