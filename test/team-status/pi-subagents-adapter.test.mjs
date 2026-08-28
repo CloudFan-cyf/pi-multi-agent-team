@@ -224,6 +224,28 @@ test("terminal results map exit/error/stopped states and always set terminalAt",
   }
 });
 
+test("object-shaped error counts as failed; non-integer exitCode (NaN/Infinity) does not fail", () => {
+  const runtime = newRuntime();
+  const adapter = newAdapter(createTestBus(), runtime);
+  adapter.onToolStart(toolStart("subagent", "call-oe", { agent: "executor", task: "Run" }));
+  adapter.onToolEnd(toolEnd("subagent", "call-oe", {
+    content: [{ type: "text", text: "done" }],
+    details: {
+      mode: "parallel",
+      runId: "run-oe",
+      results: [
+        { index: 0, agent: "executor", task: "ObjErr", exitCode: 0, error: { message: "boom", code: "E_FAIL" }, usage: {} },
+        { index: 1, agent: "executor", task: "NaNClean", exitCode: NaN, usage: {} },
+        { index: 2, agent: "executor", task: "InfClean", exitCode: Infinity, usage: {} },
+      ],
+    },
+  }));
+  const byTitle = new Map([...runtime.members.values()].map((member) => [member.title, member]));
+  assert.equal(byTitle.get("ObjErr").state, "failed");
+  assert.equal(byTitle.get("NaNClean").state, "completed");
+  assert.equal(byTitle.get("InfClean").state, "completed");
+});
+
 // ---------- 异步 RPC 关联 ----------
 
 test("async launch binds details.asyncId to asyncSnapshot root id", async () => {
@@ -384,4 +406,32 @@ test("dispose unsubscribes any pending reply listener and settles the pending re
   client.dispose();
   assert.equal(bus.replyListenerCount(), 0);
   assert.equal(await pending, undefined);
+});
+
+test("throwing emit resolves undefined, cleans up, and allows a subsequent call", async () => {
+  const bus = createTestBus();
+  const originalEmit = bus.emit.bind(bus);
+  let shouldThrow = true;
+  bus.emit = (channel, data) => {
+    if (shouldThrow && channel === SUBAGENT_RPC_REQUEST_EVENT) {
+      throw new Error("emit exploded");
+    }
+    return originalEmit(channel, data);
+  };
+  const client = new SubagentsRpcClient({ events: bus });
+
+  const first = await client.status(5000);
+  assert.equal(first, undefined);
+  assert.equal(bus.replyListenerCount(), 0);
+  assert.equal(client.inflight, false);
+  assert.equal(client.activeTimer, undefined);
+  assert.equal(client.activeUnsub, undefined);
+  assert.equal(client.activeSettle, undefined);
+
+  // emit 行为恢复后，后续调用仍可正常发起（inflight/清理未卡死）。
+  shouldThrow = false;
+  installBridge(bus, { asyncSnapshot });
+  const second = await client.status(1000);
+  assert.equal(second.kind, "pi-subagents.status");
+  assert.equal(bus.replyListenerCount(), 0);
 });

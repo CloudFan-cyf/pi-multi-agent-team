@@ -376,13 +376,17 @@ export class SubagentsRpcClient {
       const unsub = this.events.on(channel, (reply) => settle(parseStatusReply(reply, requestId)));
       this.activeUnsub = typeof unsub === "function" ? unsub : undefined;
       this.activeTimer = setTimeout(() => settle(undefined), timeoutMs);
-      // subscribe-before-emit：先挂监听再发请求。
-      this.events.emit(SUBAGENT_RPC_REQUEST_EVENT, {
-        version: SUBAGENT_RPC_VERSION,
-        requestId,
-        method: "status",
-        params: {},
-      });
+      // subscribe-before-emit：先挂监听再发请求；emit 同步抛出时走正常清理路径。
+      try {
+        this.events.emit(SUBAGENT_RPC_REQUEST_EVENT, {
+          version: SUBAGENT_RPC_VERSION,
+          requestId,
+          method: "status",
+          params: {},
+        });
+      } catch {
+        settle(undefined);
+      }
     });
   }
 
@@ -500,9 +504,11 @@ function mapForegroundStatus(status: unknown): TeamMemberState {
 function mapResultState(rec: Record<string, unknown>): TeamMemberState {
   if (rec.stopped === true || rec.interrupted === true || rec.detached === true) return "stopped";
   if (rec.timedOut === true) return "failed";
-  if (asString(rec.error)) return "failed";
+  // 任何非 null 的 error（字符串或对象形状）都判 failed。
+  if (rec.error != null) return "failed";
   const exitCode = rec.exitCode;
-  if (typeof exitCode === "number" && exitCode !== 0) return "failed";
+  // 仅当 exitCode 是有限整数时判失败，避免 NaN/Infinity 造成误报。
+  if (Number.isInteger(exitCode) && exitCode !== 0) return "failed";
   return "completed";
 }
 
