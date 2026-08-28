@@ -94,6 +94,7 @@ interface TeamMemberStatusV1 {
   key: string;             // 不透明成员 key，不暴露 run/tool/session id
   role: TeamRole;
   agent?: string;          // 最多 96 字符
+  model?: string;          // 可选；最多 96 字符，绝不存 thinking/敏感字段
   title: string;           // 最多 160 字符
   preview: string[];       // 最多 2 行，每行最多 160 字符
   state: TeamMemberState;
@@ -196,6 +197,8 @@ Foreground 成员只使用父进程的工具事件，不与 Fleet DTO 做逐条 
 - 启动工具的 partial/final result 提供 `runId`/`asyncId` 和 async artifact identity。
 - 以 `runId`/`asyncId` 关联公开 RPC `status` 返回的 `asyncSnapshot.runs[].id`。
 - `asyncSnapshot` 提供状态、树形 step、`currentTool`、turn/tool count 和时间。
+- async 成员的 role/agent/model 优先取 artifact step 的 `agent`/`model`（有界 status.json 投影），
+  缺失时回退到公开 node `label`；title 仍用稳定 node `id`。
 - 调用时的 workflow key/child index 与 task packet 仍是标题和 Team 角色映射来源。
 - `fleetStatus` 只用于 active 总数、capacity 和 omitted 提示，不作为成员身份、标题或 preview 的 join 数据源；当前 v1 的 `goal` 不能假设存在。
 - artifact 或子会话尾部仅可作为 preview 的可选补充，不参与成员身份或 active 判定。
@@ -356,6 +359,13 @@ Web 身份主要依赖符号和文本标签。可选 ANSI SGR 颜色只能作为
 | Other | `•` | muted | agent/profile 名 |
 
 图标必须配合文字，不能只靠颜色表达身份或状态。
+
+紧凑头行统一为 `{icon} {角色标签} · {state}[ · {model}]`：model 存在时追加一个 ` · `
+分隔符与 model 文本，不存在时不追加多余分隔符。TUI 中 model 用 muted 色；
+stock pi-web 仅对角色段与状态段注入有界标准 SGR（完整复位，经 AnsiText 渲染），
+角色映射 leader 品红、researcher 青、challenger 黄、executor 绿、reviewer 蓝、other 弱化，
+状态映射 running/completed 绿、failed 红、stale 黄、starting 青、stopped/idle 弱化；
+单行状态摘要保持纯文本无颜色。
 
 TUI 卡片示意：
 

@@ -92,3 +92,33 @@ pi-web 源码 checkout（`D:/Github projects/pi-dev/pi-web`，`@agegr/pi-web@0.8
   对 `completed` 返回 `run.result`，因此 adapter 的 `notificationPreview` 直接读 `message.content`
   即可拿到终态文本，符合现有实现。
 - 本轮未修改只读上游 checkout。
+
+## 有界手动反馈修复波（2026-08-27）
+
+### 实测发现（初检失败）
+
+真实运行中，某 async workflow 子成员在 shard 中持久化为 `role=other`、
+`agent=drivers-risk-fallback`、`preview=[Running web_search]`，而对应的有界 async
+`status.json` step 实为 `agent=deep-researcher`、`label/workflowKey=drivers-risk-fallback`、
+`model=gpt-5.6-sol`、`currentTool=web_search`、`recentOutput=[]`。
+
+根因：`pi-subagents` 公开 `asyncSnapshot` 有意只暴露 `label` 而不暴露 `agent`/`model`；
+当前 adapter 只读有界 `status.json` 拿 `recentOutput`，丢弃了 `agent`/`model`，导致
+role 被错误降级为 `other`、model 缺失。
+
+### 本轮修复（本 worktree）
+
+- `TeamMemberStatusV1` 新增可选净化 `model`（≤ 96 字符，绝不持久化 thinking/敏感字段），v1 向后兼容。
+- 单次有界 `status.json` 读取改为返回选中 step 的 `agent`/`model`/≤2 行净化 `recentOutput`
+  （路径字面量、1 MiB 预检、childIndex 仅作 steps 索引、畸形/缺失 → 空投影，单次轮询不重复读）。
+- async 优先取 artifact step `agent`/`model`，缺失回退公开 node `label`；该案例现在为
+  `role=deep-researcher`、`agent=deep-researcher`、`model=gpt-5.6-sol`，title 仍用稳定 node `id`。
+- foreground 从 progress/result DTO 填充 model，merge 在省略时保留 last-known model。
+- TUI/Web 紧凑头行为 `{icon} {角色} · {state}[ · {model}]`；Web 角色/状态段注入有界标准 SGR
+  （完整复位，经 AnsiText），摘要保持纯文本。
+
+### 复测状态（诚实记录）
+
+- 自动测试已覆盖该真实形状 fixture 并转绿；真实 TUI/stock pi-web 复测仍为
+  **⛔ PENDING RE-TEST**，与 Gate 5–8 一起保持待办，未标记为 PASS。
+- 未触碰 `~/.pi/agent/settings.json`，未启动/停止任何 pi-web 进程，未改动只读上游 checkout。

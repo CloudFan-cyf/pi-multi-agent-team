@@ -2,8 +2,9 @@
  * Team 团队可视化 — stock pi-web 状态与 Widget 投影（Task 4）。
  *
  * 纯文本渲染 + 极窄的 Extension UI 投影：
- * - renderStatusSummary：单行摘要（leader 数 + 各非零状态数），setStatus 常驻展示；
+ * - renderStatusSummary：单行摘要（leader 数 + 各非零状态数），setStatus 常驻展示（纯文本无颜色）；
  * - renderWebWidgetLines：成员块（图标 + 角色标签 + 状态 + 标题 + 最多两行 preview），
+ *   头行角色/状态段注入有界标准 SGR（stock AnsiText 渲染，段后完整复位），
  *   保持聚合给定的 Leader-first 顺序，成员块之间仅用空行分隔（末成员后不尾随空行）；
  * - projectWebWidget / clearWebWidget：仅在 ctx.mode === "rpc"（stock pi-web）时
  *   写 setStatus/setWidget；其他模式一律 no-op。
@@ -51,6 +52,44 @@ const ROLE_LABELS: Record<TeamRole, string> = {
   other: "Other",
 };
 
+/** Web 头行颜色：有界标准 SGR；stock pi-web 经 AnsiText 渲染，每段完整复位。 */
+const ANSI_RESET = "\x1b[0m";
+
+/** 角色 SGR：leader 品红、researcher 青、challenger 黄、executor 绿、reviewer 蓝、other 弱化。 */
+const ROLE_ANSI: Record<TeamRole, string> = {
+  leader: "35",
+  "deep-researcher": "36",
+  challenger: "33",
+  executor: "32",
+  reviewer: "34",
+  other: "2",
+};
+
+/** 状态 SGR：running/completed 绿、failed 红、stale 黄、starting 青、stopped/idle 弱化。 */
+const STATE_ANSI: Record<TeamMemberState, string> = {
+  idle: "2",
+  starting: "36",
+  running: "32",
+  completed: "32",
+  failed: "31",
+  stopped: "2",
+  stale: "33",
+};
+
+/** 用完整 SGR 复位包裹单段颜色（模型段保持无色，仅角色/状态段上色）。 */
+function sgr(code: string, text: string): string {
+  return `\x1b[${code}m${text}${ANSI_RESET}`;
+}
+
+/** 紧凑头行：`{icon} {角色标签} · {state}[ · {model}]`；无 model 时不追加多余分隔符。 */
+function compactHeader(member: TeamMemberStatusV1): string {
+  const roleSegment = sgr(ROLE_ANSI[member.role], `${roleIcon(member.role)} ${roleLabel(member)}`);
+  const stateSegment = sgr(STATE_ANSI[member.state], member.state);
+  const parts = [roleSegment, stateSegment];
+  if (member.model) parts.push(member.model);
+  return parts.join(" · ");
+}
+
 /** projectWebWidget/clearWebWidget 所需的最小 ctx 结构（与 ExtensionContext 结构兼容）。 */
 export interface WebWidgetUi {
   setStatus(key: string, text: string | undefined): void;
@@ -85,7 +124,8 @@ export function renderStatusSummary(aggregate: TeamAggregateV1): string {
 
 /**
  * Widget 行：每名成员渲染
- *   头行 `{icon} {角色标签} · {state}`
+ *   头行 `{icon} {角色标签} · {state}[ · {model}]`（角色/状态段注入有界 SGR 并复位，
+ *   model 存在时以纯文本追加，无 model 时不追加多余分隔符）
  *   标题行（若有）与最多 MAX_WIDGET_PREVIEW_LINES 行 preview（各缩进两空格）。
  * 成员块之间用空行分隔，末成员后无空行。保持聚合给定的 Leader-first 顺序。
  * `now` 参数为接口契约保留（供后续时长渲染扩展），当前渲染不含时长。
@@ -94,7 +134,7 @@ export function renderWebWidgetLines(aggregate: TeamAggregateV1, now: number): s
   const lines: string[] = [];
   for (const member of aggregate.members) {
     if (lines.length > 0) lines.push("");
-    lines.push(`${roleIcon(member.role)} ${roleLabel(member)} · ${member.state}`);
+    lines.push(compactHeader(member));
     if (member.title) lines.push(`  ${member.title}`);
     const preview = member.preview.filter((line) => line.length > 0).slice(-MAX_WIDGET_PREVIEW_LINES);
     for (const previewLine of preview) {

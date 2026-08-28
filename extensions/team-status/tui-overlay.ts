@@ -126,7 +126,8 @@ function renderBoundedLine(segments: LineSegment[], width: number, theme: ThemeL
 
 /**
  * 渲染 TUI overlay 行：每名成员渲染
- *   头行 `{icon} {角色标签} · {state}`（图标/角色按角色色，状态按状态色）
+ *   头行 `{icon} {角色标签} · {state}[ · {model}]`（图标/角色按角色色，状态按状态色，
+ *   model 存在时以 muted 色追加，无 model 时不追加多余分隔符）
  *   标题行（若有）与最多 MAX_OVERLAY_PREVIEW_LINES 行 preview（各缩进两空格）。
  * 成员块之间用空行分隔，末成员后无空行。保持聚合给定的 Leader-first 顺序。
  * 所有行（含彩色段）的可见 code point 数 ≤ width。
@@ -136,17 +137,16 @@ export function renderTuiOverlayLines(aggregate: TeamAggregateV1, width: number,
   if (width <= 0) return lines;
   for (const member of aggregate.members) {
     if (lines.length > 0) lines.push("");
-    lines.push(
-      renderBoundedLine(
-        [
-          { text: `${roleIcon(member.role)} ${roleLabel(member)}`, color: ROLE_COLORS[member.role] },
-          { text: " · " },
-          { text: member.state, color: STATE_COLORS[member.state] },
-        ],
-        width,
-        theme,
-      ),
-    );
+    const headerSegments: LineSegment[] = [
+      { text: `${roleIcon(member.role)} ${roleLabel(member)}`, color: ROLE_COLORS[member.role] },
+      { text: " · " },
+      { text: member.state, color: STATE_COLORS[member.state] },
+    ];
+    if (member.model) {
+      headerSegments.push({ text: " · " });
+      headerSegments.push({ text: member.model, color: "muted" });
+    }
+    lines.push(renderBoundedLine(headerSegments, width, theme));
     if (member.title) {
       lines.push(renderBoundedLine([{ text: `  ${member.title}` }], width, theme));
     }

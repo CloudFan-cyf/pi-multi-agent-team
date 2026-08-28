@@ -19,6 +19,7 @@ import { makeMemberKey } from "../../extensions/team-status/sanitize.ts";
 import {
   createPiSubagentsAdapter,
   readAsyncPreview,
+  readAsyncStep,
   SubagentsRpcClient,
   SUBAGENT_RPC_REQUEST_EVENT,
   SUBAGENT_RPC_REPLY_PREFIX,
@@ -135,13 +136,13 @@ function childByTitle(runtime, title) {
   return [...runtime.members.values()].find((member) => member.title === title);
 }
 
-function newAdapter(bus, runtime, { readAsyncPreview: previewReader, now = () => NOW } = {}) {
+function newAdapter(bus, runtime, { readAsyncStep: stepReader, now = () => NOW } = {}) {
   return createPiSubagentsAdapter({
     events: bus,
     runtime,
     now,
     onChanged: () => {},
-    ...(previewReader ? { readAsyncPreview: previewReader } : {}),
+    ...(stepReader ? { readAsyncStep: stepReader } : {}),
   });
 }
 
@@ -156,6 +157,65 @@ test("foreground rows use details.runId plus stable result index, not Fleet keys
   assert.equal(member.role, "executor");
   assert.equal(member.title, "Implement reducer");
   assert.deepEqual(member.preview, ["npm test", "7 passing"]);
+});
+
+test("foreground progress and result propagate model and merge retains last known model", () => {
+  const runtime = newRuntime();
+  const adapter = newAdapter(createTestBus(), runtime);
+  adapter.onToolStart(toolStart("subagent", "call-model", { agent: "executor", task: "Model task" }));
+  adapter.onToolUpdate(toolUpdate("subagent", "call-model", {
+    runId: "run-model",
+    mode: "parallel",
+    progress: [{
+      index: 1,
+      agent: "executor",
+      status: "running",
+      task: "Model task",
+      currentTool: "bash",
+      recentOutput: ["x"],
+      recentTools: [],
+      toolCount: 1,
+      tokens: 1,
+      durationMs: 1,
+      model: "gpt-5.6-sol",
+    }],
+    results: [],
+  }));
+  let member = onlyChild(runtime);
+  assert.equal(member.model, "gpt-5.6-sol");
+
+  // 后续 update 省略 model：merge 必须保留 last-known model。
+  adapter.onToolUpdate(toolUpdate("subagent", "call-model", {
+    runId: "run-model",
+    mode: "parallel",
+    progress: [{
+      index: 1,
+      agent: "executor",
+      status: "running",
+      task: "Model task",
+      currentTool: "bash",
+      recentOutput: ["y"],
+      recentTools: [],
+      toolCount: 2,
+      tokens: 2,
+      durationMs: 2,
+    }],
+    results: [],
+  }));
+  member = onlyChild(runtime);
+  assert.equal(member.model, "gpt-5.6-sol");
+
+  // 终态 result 也携带 model：覆盖为新值。
+  adapter.onToolEnd(toolEnd("subagent", "call-model", {
+    content: [{ type: "text", text: "done" }],
+    details: {
+      mode: "parallel",
+      runId: "run-model",
+      results: [{ index: 1, agent: "executor", task: "Model task", exitCode: 0, model: "deepseek-v4-flash", usage: {} }],
+    },
+  }));
+  member = onlyChild(runtime);
+  assert.equal(member.model, "deepseek-v4-flash");
 });
 
 test("foreground member key derives from writerId + toolCallId + numeric index, ignoring fleet keys", () => {
@@ -349,6 +409,80 @@ test("readAsyncPreview returns [] when status.json is missing or malformed", asy
   try {
     writeFileSync(join(dir, "status.json"), "not-json{{");
     assert.deepEqual(await readAsyncPreview(dir, 0, MAX_PREVIEW_BYTES), []);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("readAsyncStep returns sanitized agent/model/preview projection and empty projection on oversize/malformed", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "team-status-step-"));
+  try {
+    writeFileSync(join(dir, "status.json"), JSON.stringify({
+      runId: "r",
+      steps: [{
+        index: 0,
+        agent: "deep-researcher",
+        label: "drivers-risk-fallback",
+        model: "gpt-5.6-sol",
+        currentTool: "web_search",
+        recentOutput: ["line one", "line two", "line three"],
+      }],
+    }));
+    assert.deepEqual(await readAsyncStep(dir, 0, MAX_PREVIEW_BYTES), {
+      agent: "deep-researcher",
+      model: "gpt-5.6-sol",
+      preview: ["line two", "line three"],
+    });
+    // 文件超过字节上限：读前即拒绝，返回空投影（无 agent/model）。
+    assert.deepEqual(await readAsyncStep(dir, 0, 8), { preview: [] });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+  assert.deepEqual(await readAsyncStep(join(tmpdir(), "team-status-step-missing"), 0, MAX_PREVIEW_BYTES), { preview: [] });
+});
+
+test("async members prefer artifact step agent/model and keep last two output lines", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "team-status-artifact-"));
+  const snapshot = {
+    ...asyncSnapshot,
+    runs: [{
+      id: "async-run",
+      kind: "workflow",
+      label: "drivers-risk-fallback",
+      state: "running",
+      children: [
+        { id: "drivers-risk-fallback", kind: "step", label: "drivers-risk-fallback", state: "running", activity: { currentTool: "web_search" } },
+      ],
+    }],
+  };
+  try {
+    writeFileSync(join(dir, "status.json"), JSON.stringify({
+      runId: "async-run",
+      steps: [{
+        index: 0,
+        agent: "deep-researcher",
+        label: "drivers-risk-fallback",
+        workflowKey: "drivers-risk-fallback",
+        model: "gpt-5.6-sol",
+        currentTool: "web_search",
+        recentOutput: ["first line", "second line", "third line"],
+      }],
+    }));
+    const bus = createTestBus();
+    installBridge(bus, { asyncSnapshot: snapshot });
+    const runtime = newRuntime();
+    const adapter = newAdapter(bus, runtime);
+    adapter.onToolEnd(toolEnd("subagent", "call-artifact", {
+      content: [{ type: "text", text: "detached" }],
+      details: { mode: "workflow", runId: "async-run", asyncId: "async-run", asyncDir: dir, results: [] },
+    }));
+    await adapter.refreshAsync();
+    const member = onlyChild(runtime);
+    assert.equal(member.role, "deep-researcher");
+    assert.equal(member.agent, "deep-researcher");
+    assert.equal(member.model, "gpt-5.6-sol");
+    assert.equal(member.title, "drivers-risk-fallback");
+    assert.deepEqual(member.preview, ["second line", "third line"]);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

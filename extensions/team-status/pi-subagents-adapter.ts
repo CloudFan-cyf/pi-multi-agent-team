@@ -26,6 +26,7 @@ import {
 } from "./sanitize.ts";
 import {
   MAX_AGENT_LENGTH,
+  MAX_MODEL_LENGTH,
   MAX_TEXT_LENGTH,
   type TeamMemberState,
   type TeamMemberStatusV1,
@@ -411,42 +412,63 @@ export class SubagentsRpcClient {
   }
 }
 
-// ---------- 可选 artifact preview ----------
+// ---------- 可选 artifact 投影 ----------
 
 /**
- * 只读字面 `<asyncDir>/status.json` 的 bounded preview：读前检查大小（≤ maxBytes，
- * 缺省 1 MiB），解析失败/缺失一律返回 []。childIndex 仅作 steps 数组位置索引，
- * 绝不参与路径派生（忽略任何 path-like node id）。
+ * 只读字面 `<asyncDir>/status.json` 的有界 step 投影：读前检查大小（≤ maxBytes，
+ * 缺省 1 MiB），解析失败/缺失一律返回空投影。childIndex 仅作 steps 数组位置索引，
+ * 绝不参与路径派生（忽略任何 path-like node id）。单次读取同时返回该 step 的
+ * 净化 agent、model 与至多两行净化 recentOutput（绝不读 thinking/敏感字段）。
  */
-export async function readAsyncPreview(asyncDir: string, childIndex: number, maxBytes = MAX_ASYNC_PREVIEW_BYTES): Promise<string[]> {
+export interface AsyncStepProjection {
+  agent?: string;
+  model?: string;
+  preview: string[];
+}
+
+export async function readAsyncStep(asyncDir: string, childIndex: number, maxBytes = MAX_ASYNC_PREVIEW_BYTES): Promise<AsyncStepProjection> {
   const statusPath = join(asyncDir, "status.json");
   try {
     const stat = await fspStat(statusPath);
-    if (!stat.isFile()) return [];
-    if (stat.size > maxBytes) return [];
+    if (!stat.isFile()) return { preview: [] };
+    if (stat.size > maxBytes) return { preview: [] };
   } catch {
-    return [];
+    return { preview: [] };
   }
   let text: string;
   try {
     text = await readFile(statusPath, "utf8");
   } catch {
-    return [];
+    return { preview: [] };
   }
   let parsed: unknown;
   try {
     parsed = JSON.parse(text);
   } catch {
-    return [];
+    return { preview: [] };
   }
   const rec = asRecord(parsed);
-  if (!rec) return [];
-  if (!Array.isArray(rec.steps)) return [];
+  if (!rec) return { preview: [] };
+  if (!Array.isArray(rec.steps)) return { preview: [] };
   const step = asRecord(rec.steps[childIndex]);
-  if (!step) return [];
+  if (!step) return { preview: [] };
+  const agent = asString(step.agent);
+  const model = asString(step.model);
   const recentOutput = asStringArray(step.recentOutput);
-  if (!recentOutput || recentOutput.length === 0) return [];
-  return sanitizePreviewLines(recentOutput, 2);
+  const projection: AsyncStepProjection = { preview: [] };
+  if (agent) projection.agent = sanitizeDisplayText(agent, MAX_AGENT_LENGTH) || undefined;
+  if (model) projection.model = sanitizeDisplayText(model, MAX_MODEL_LENGTH) || undefined;
+  if (recentOutput && recentOutput.length > 0) projection.preview = sanitizePreviewLines(recentOutput, 2);
+  return projection;
+}
+
+/**
+ * 便捷导出：仅取投影的 preview 行（≤ 2）。供既有的 preview 单测/调用方使用；
+ * 生产轮询路径应直接使用 readAsyncStep 以免同一次轮询内重复读文件。
+ */
+export async function readAsyncPreview(asyncDir: string, childIndex: number, maxBytes = MAX_ASYNC_PREVIEW_BYTES): Promise<string[]> {
+  const projection = await readAsyncStep(asyncDir, childIndex, maxBytes);
+  return projection.preview;
 }
 
 // ---------- 适配器 ----------
@@ -456,7 +478,7 @@ export interface PiSubagentsAdapterOptions {
   runtime: TeamRuntimeState;
   now: () => number;
   onChanged: () => void;
-  readAsyncPreview?: (asyncDir: string, childIndex: number, maxBytes: number) => Promise<string[]>;
+  readAsyncStep?: (asyncDir: string, childIndex: number, maxBytes: number) => Promise<AsyncStepProjection>;
   rpcTimeoutMs?: number;
   randomUUID?: () => string;
 }
@@ -531,7 +553,7 @@ export function createPiSubagentsAdapter(options: PiSubagentsAdapterOptions): Pi
   const runtime = options.runtime;
   const now = options.now;
   const onChanged = options.onChanged;
-  const readPreview = options.readAsyncPreview ?? readAsyncPreview;
+  const readStep = options.readAsyncStep ?? readAsyncStep;
   const rpc = new SubagentsRpcClient({
     events: options.events,
     randomUUID: options.randomUUID,
@@ -562,6 +584,7 @@ export function createPiSubagentsAdapter(options: PiSubagentsAdapterOptions): Pi
       key: member.key,
       role,
       agent,
+      model: member.model ?? existing?.model,
       title: member.title || existing?.title || "",
       preview: member.preview.length > 0 ? member.preview : existing?.preview ?? [],
       state: member.state,
@@ -579,6 +602,7 @@ export function createPiSubagentsAdapter(options: PiSubagentsAdapterOptions): Pi
     toolCallId: string;
     index: number;
     agent: string | undefined;
+    model: string | undefined;
     task: string | undefined;
     state: TeamMemberState;
     preview: string[];
@@ -587,6 +611,7 @@ export function createPiSubagentsAdapter(options: PiSubagentsAdapterOptions): Pi
       key: makeMemberKey(runtime.writerId, args.toolCallId, args.index),
       role: roleForAgent(args.agent),
       agent: args.agent ? sanitizeDisplayText(args.agent, MAX_AGENT_LENGTH) : undefined,
+      model: args.model ? sanitizeDisplayText(args.model, MAX_MODEL_LENGTH) || undefined : undefined,
       title: extractTaskTitle(args.task),
       preview: args.preview,
       state: args.state,
@@ -668,6 +693,7 @@ export function createPiSubagentsAdapter(options: PiSubagentsAdapterOptions): Pi
         toolCallId,
         index,
         agent: asString(item.agent) ?? ctx?.agent,
+        model: asString(item.model),
         task: asString(item.task) ?? ctx?.task,
         state: mapForegroundStatus(item.status),
         preview: progressPreview(item),
@@ -698,6 +724,7 @@ export function createPiSubagentsAdapter(options: PiSubagentsAdapterOptions): Pi
         toolCallId,
         index,
         agent: asString(item.agent) ?? ctx?.agent,
+        model: asString(item.model),
         task: asString(item.task) ?? ctx?.task,
         state: mapResultState(item),
         preview: resultPreview(item),
@@ -719,14 +746,18 @@ export function createPiSubagentsAdapter(options: PiSubagentsAdapterOptions): Pi
     toolCallId: string;
     childIndex: number;
     node: AsyncStatusNodeV1;
+    artifactAgent: string | undefined;
+    artifactModel: string | undefined;
     preview: string[];
   }): TeamMemberStatusV1 {
-    const { toolCallId, childIndex, node, preview } = args;
+    const { toolCallId, childIndex, node, artifactAgent, artifactModel, preview } = args;
     const state = mapAsyncState(node.state);
+    const agentSource = artifactAgent ?? node.label;
     const member: TeamMemberStatusV1 = {
       key: makeMemberKey(runtime.writerId, toolCallId, childIndex),
-      role: roleForAgent(node.label),
-      agent: sanitizeDisplayText(node.label, MAX_AGENT_LENGTH) || undefined,
+      role: roleForAgent(agentSource),
+      agent: sanitizeDisplayText(agentSource, MAX_AGENT_LENGTH) || undefined,
+      model: artifactModel ? sanitizeDisplayText(artifactModel, MAX_MODEL_LENGTH) || undefined : undefined,
       title: asyncTitle(node),
       preview,
       state,
@@ -739,16 +770,24 @@ export function createPiSubagentsAdapter(options: PiSubagentsAdapterOptions): Pi
     return member;
   }
 
-  async function resolveAsyncPreview(asyncDir: string, childIndex: number, node: AsyncStatusNodeV1): Promise<string[]> {
-    let raw: string[] = [];
+  interface ResolvedAsyncArtifact {
+    agent?: string;
+    model?: string;
+    preview: string[];
+  }
+
+  async function resolveAsyncArtifact(asyncDir: string, childIndex: number, node: AsyncStatusNodeV1): Promise<ResolvedAsyncArtifact> {
+    let projection: AsyncStepProjection = { preview: [] };
     try {
-      raw = await readPreview(asyncDir, childIndex, MAX_ASYNC_PREVIEW_BYTES);
+      projection = await readStep(asyncDir, childIndex, MAX_ASYNC_PREVIEW_BYTES);
     } catch {
-      raw = [];
+      projection = { preview: [] };
     }
-    const preview = sanitizePreviewLines(raw, 2);
-    if (preview.length > 0) return preview;
-    return currentToolPreview(node.activity?.currentTool);
+    const preview = sanitizePreviewLines(projection.preview, 2);
+    if (preview.length > 0) {
+      return { agent: projection.agent, model: projection.model, preview };
+    }
+    return { agent: projection.agent, model: projection.model, preview: currentToolPreview(node.activity?.currentTool) };
   }
 
   async function upsertAsyncRun(asyncId: string, record: AsyncRunRecord, run: AsyncStatusNodeV1): Promise<void> {
@@ -758,8 +797,15 @@ export function createPiSubagentsAdapter(options: PiSubagentsAdapterOptions): Pi
       const node = nodes[childIndex];
       const key = makeMemberKey(runtime.writerId, record.toolCallId, childIndex);
       keys.push(key);
-      const preview = await resolveAsyncPreview(record.asyncDir, childIndex, node);
-      mergeUpsert(buildAsyncMember({ toolCallId: record.toolCallId, childIndex, node, preview }));
+      const artifact = await resolveAsyncArtifact(record.asyncDir, childIndex, node);
+      mergeUpsert(buildAsyncMember({
+        toolCallId: record.toolCallId,
+        childIndex,
+        node,
+        artifactAgent: artifact.agent,
+        artifactModel: artifact.model,
+        preview: artifact.preview,
+      }));
     }
     const previousKeys = asyncMemberKeys.get(asyncId) ?? [];
     asyncMemberKeys.set(asyncId, keys);

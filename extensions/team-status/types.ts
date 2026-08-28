@@ -10,6 +10,7 @@ export const TEAM_STATUS_VERSION = 1 as const;
 export const MAX_MEMBERS = 16;
 export const MAX_SHARD_BYTES = 32 * 1024;
 export const MAX_AGENT_LENGTH = 96;
+export const MAX_MODEL_LENGTH = 96;
 export const MAX_TEXT_LENGTH = 160;
 export const TERMINAL_RETENTION_MS = 30_000;
 export const STALE_AFTER_MS = 15_000;
@@ -27,6 +28,7 @@ export interface TeamMemberStatusV1 {
   key: string;
   role: TeamRole;
   agent?: string;
+  model?: string;
   title: string;
   preview: string[];
   state: TeamMemberState;

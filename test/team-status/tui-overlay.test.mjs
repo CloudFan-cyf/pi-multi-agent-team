@@ -300,6 +300,33 @@ test("overlay renders icon, role, state, title, and at most two preview lines", 
   ]);
 });
 
+test("overlay header renders muted model and omits separator when absent", () => {
+  const lines = renderTuiOverlayLines(
+    aggregate([member({ role: "executor", state: "running", model: "gpt-5.6-sol" })]),
+    TUI_OVERLAY_WIDTH,
+    plainTheme(),
+  );
+  assert.equal(lines[0], "› Executor · running · gpt-5.6-sol");
+
+  const noModel = renderTuiOverlayLines(
+    aggregate([member({ role: "executor", state: "running" })]),
+    TUI_OVERLAY_WIDTH,
+    plainTheme(),
+  );
+  assert.equal(noModel[0], "› Executor · running");
+});
+
+test("overlay header applies the muted theme color to the model segment", () => {
+  const colored = [];
+  const theme = { fg(color, text) { colored.push([color, text]); return text; } };
+  renderTuiOverlayLines(
+    aggregate([member({ role: "executor", state: "running", model: "gpt-5.6-sol" })]),
+    TUI_OVERLAY_WIDTH,
+    theme,
+  );
+  assert.ok(colored.some(([color, text]) => color === "muted" && text === "gpt-5.6-sol"), "model segment should use muted color");
+});
+
 test("overlay keeps blank separators only between members", () => {
   const lines = renderTuiOverlayLines(
     aggregate([

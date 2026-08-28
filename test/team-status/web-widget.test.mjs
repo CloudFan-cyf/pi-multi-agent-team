@@ -68,7 +68,7 @@ test("summary carries useful counts without opening the widget", () => {
 test("widget renders icon, role, state, title, and at most two preview lines", () => {
   const lines = renderWebWidgetLines(aggregate([executorWithThreePreviewLines()]), NOW);
   assert.deepEqual(lines, [
-    "› Executor · running",
+    "\x1b[32m› Executor\x1b[0m · \x1b[32mrunning\x1b[0m",
     "  Implement reducer",
     "  second line",
     "  third line",
@@ -84,13 +84,53 @@ test("widget keeps blank separators only between members", () => {
     NOW,
   );
   assert.deepEqual(lines, [
-    "◆ Leader · running",
+    "\x1b[35m◆ Leader\x1b[0m · \x1b[32mrunning\x1b[0m",
     "  Lead task",
     "  Leader preview",
     "",
-    "✓ Reviewer · completed",
+    "\x1b[34m✓ Reviewer\x1b[0m · \x1b[32mcompleted\x1b[0m",
     "  Review done",
   ]);
+});
+
+test("widget header injects bounded role/state ANSI colors and appends model", () => {
+  const lines = renderWebWidgetLines(aggregate([member({ role: "executor", state: "running", model: "gpt-5.6-sol" })]), NOW);
+  assert.equal(lines[0], "\x1b[32m› Executor\x1b[0m · \x1b[32mrunning\x1b[0m · gpt-5.6-sol");
+});
+
+test("widget header omits model separator when absent", () => {
+  const lines = renderWebWidgetLines(aggregate([member({ role: "leader", state: "running" })]), NOW);
+  assert.equal(lines[0], "\x1b[35m◆ Leader\x1b[0m · \x1b[32mrunning\x1b[0m");
+});
+
+test("widget role and state ANSI mapping matches the approved accessible palette", () => {
+  const cases = [
+    ["leader", "35"],
+    ["deep-researcher", "36"],
+    ["challenger", "33"],
+    ["executor", "32"],
+    ["reviewer", "34"],
+    ["other", "2"],
+  ];
+  for (const [role, code] of cases) {
+    const lines = renderWebWidgetLines(aggregate([member({ role, state: "running" })]), NOW);
+    assert.ok(lines[0].startsWith(`\x1b[${code}m`), `role ${role} should use SGR ${code}, got ${JSON.stringify(lines[0])}`);
+    assert.ok(lines[0].includes("\x1b[0m"), `role ${role} segment must be reset`);
+  }
+  const stateCases = [
+    ["running", "32"],
+    ["completed", "32"],
+    ["failed", "31"],
+    ["stale", "33"],
+    ["starting", "36"],
+    ["stopped", "2"],
+    ["idle", "2"],
+  ];
+  for (const [state, code] of stateCases) {
+    const lines = renderWebWidgetLines(aggregate([member({ role: "executor", state })]), NOW);
+    assert.ok(lines[0].includes(`\x1b[${code}m`), `state ${state} should use SGR ${code}, got ${JSON.stringify(lines[0])}`);
+    assert.equal(lines[0].split("\x1b[0m").length - 1, 2, `state ${state} header must contain exactly two resets`);
+  }
 });
 
 test("enabled projection writes status and above-editor widget in RPC mode", () => {
@@ -101,7 +141,7 @@ test("enabled projection writes status and above-editor widget in RPC mode", () 
     true,
   );
   assert.deepEqual(ui.statusCalls.at(-1), ["team-status", "◆ Team · 1 leader · 1 running"]);
-  assert.deepEqual(ui.widgetCalls.at(-1), ["team-status", ["◆ Leader · running"], { placement: "aboveEditor" }]);
+  assert.deepEqual(ui.widgetCalls.at(-1), ["team-status", ["\x1b[35m◆ Leader\x1b[0m · \x1b[32mrunning\x1b[0m"], { placement: "aboveEditor" }]);
 });
 
 test("disabled projection clears both RPC surfaces", () => {
