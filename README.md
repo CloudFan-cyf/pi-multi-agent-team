@@ -104,6 +104,40 @@ spec 会对照本机可用模型校验，非法时报错并提示用 `pi --list-
 
 逐角色检查：override 生效后的模型可解析、API key 可用；`subagent` / web 工具存在；skill 被系统发现。输出迁移体检报告。
 
+## 团队可视化
+
+`/team` 激活后，当前会话的 Leader 与各子 agent 会以紧凑状态视图投影到 TUI 右侧
+overlay 与 stock pi-web 的 Extension Widget（无需修改 pi-web 源码）：
+
+```text
+/team-panel auto   # 有团队活动时显示（默认）
+/team-panel show   # 始终投影当前会话团队状态
+/team-panel hide   # 清除 overlay/status/widget
+```
+
+- **TUI**：宽终端（≥110 列）显示右侧非抢焦点 overlay；窄终端降级为单行状态摘要。
+- **stock pi-web**：使用编辑器附近的 Extension Widget（`placement: aboveEditor`）展示
+  详情，footer 常驻单行 `◆ Team …` 摘要；列表超过约 3 行时 Widget 可能折叠为 trigger，
+  需点击展开，该行为由 stock `ExtensionWidgets` 控制，本包不伪造展开状态、也不提供
+  右侧栏或原生卡片 DOM。
+- **本地预览的持久化/安全注意**：成员 title/preview 会持久化到用户级本地目录
+  `~/.pi/agent/team-status/v1/`（Unix 下目录/文件尽力 `0o700`/`0o600`）；best-effort
+  凭据脱敏**不是安全保证**，Windows 下依赖用户目录继承 ACL，不要在网络可访问目录
+  运行或把该目录当作审计/消息队列/安全边界。
+- **父进程退出限制**：拥有任务的父 Pi 进程退出后，仍在运行的 detached child 不被
+  v1 继续追踪；旧 shard 会先变 stale 再消失，不承诺跨全新父会话恢复投影。
+
+本地/半自动验证 fixture（写入一个活的 Leader+Executor shard，退出时自清理）：
+
+```bash
+node --experimental-strip-types scripts/write-team-status-fixture.mjs \
+  --agent-dir "$HOME/.pi/agent" \
+  --session-id "<与 pi-web 会话一致的 id>" \
+  --duration-ms 60000
+```
+
+完整手工验证清单见 `docs/team-visualization-validation.md`。
+
 ## 子 Agent 续作与任务板
 
 多轮团队工作（初次执行 → 评审 → 裁决 → 修复 → 复审 → 验收）跨多个 workflow，靠
