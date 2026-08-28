@@ -423,6 +423,8 @@ export class SubagentsRpcClient {
 export interface AsyncStepProjection {
   agent?: string;
   model?: string;
+  /** 净化后的 workflowKey 关联提示：用于防御 steps/children 顺序错位，绝不写入 Team DTO。 */
+  workflowKey?: string;
   preview: string[];
 }
 
@@ -454,10 +456,12 @@ export async function readAsyncStep(asyncDir: string, childIndex: number, maxByt
   if (!step) return { preview: [] };
   const agent = asString(step.agent);
   const model = asString(step.model);
+  const workflowKey = asString(step.workflowKey);
   const recentOutput = asStringArray(step.recentOutput);
   const projection: AsyncStepProjection = { preview: [] };
   if (agent) projection.agent = sanitizeDisplayText(agent, MAX_AGENT_LENGTH) || undefined;
   if (model) projection.model = sanitizeDisplayText(model, MAX_MODEL_LENGTH) || undefined;
+  if (workflowKey) projection.workflowKey = sanitizeDisplayText(workflowKey, MAX_TEXT_LENGTH) || undefined;
   if (recentOutput && recentOutput.length > 0) projection.preview = sanitizePreviewLines(recentOutput, 2);
   return projection;
 }
@@ -776,12 +780,27 @@ export function createPiSubagentsAdapter(options: PiSubagentsAdapterOptions): Pi
     preview: string[];
   }
 
+  /**
+   * artifact workflowKey 关联守卫：status.json step 携带非空 workflowKey 时，必须与公开
+   * node.id 一致（合成 `step:N` id 无 workflowKey，跳过）。顺序错位 → 丢弃整份投影，
+   * 回退到公开 node.label / currentTool。仅作防御，不改数组索引这一唯一选择机制。
+   */
+  function artifactCorrelationMatches(projection: AsyncStepProjection, node: AsyncStatusNodeV1): boolean {
+    const hint = projection.workflowKey;
+    if (!hint) return true;
+    if (SYNTHETIC_STEP_ID_PATTERN.test(node.id)) return true;
+    return hint === node.id;
+  }
+
   async function resolveAsyncArtifact(asyncDir: string, childIndex: number, node: AsyncStatusNodeV1): Promise<ResolvedAsyncArtifact> {
     let projection: AsyncStepProjection = { preview: [] };
     try {
       projection = await readStep(asyncDir, childIndex, MAX_ASYNC_PREVIEW_BYTES);
     } catch {
       projection = { preview: [] };
+    }
+    if (!artifactCorrelationMatches(projection, node)) {
+      return { preview: currentToolPreview(node.activity?.currentTool) };
     }
     const preview = sanitizePreviewLines(projection.preview, 2);
     if (preview.length > 0) {

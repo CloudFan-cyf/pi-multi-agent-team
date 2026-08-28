@@ -441,6 +441,52 @@ test("readAsyncStep returns sanitized agent/model/preview projection and empty p
   assert.deepEqual(await readAsyncStep(join(tmpdir(), "team-status-step-missing"), 0, MAX_PREVIEW_BYTES), { preview: [] });
 });
 
+test("mismatched artifact workflowKey is rejected; falls back to public node.label and currentTool", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "team-status-mismatch-"));
+  const snapshot = {
+    ...asyncSnapshot,
+    runs: [{
+      id: "async-run",
+      kind: "workflow",
+      label: "executor",
+      state: "running",
+      children: [
+        { id: "expected-key", kind: "step", label: "executor", state: "running", activity: { currentTool: "edit" } },
+      ],
+    }],
+  };
+  try {
+    writeFileSync(join(dir, "status.json"), JSON.stringify({
+      runId: "async-run",
+      steps: [{
+        index: 0,
+        agent: "deep-researcher",
+        workflowKey: "wrong-key",
+        model: "gpt-5.6-sol",
+        currentTool: "web_search",
+        recentOutput: ["wrong child output"],
+      }],
+    }));
+    const bus = createTestBus();
+    installBridge(bus, { asyncSnapshot: snapshot });
+    const runtime = newRuntime();
+    const adapter = newAdapter(bus, runtime);
+    adapter.onToolEnd(toolEnd("subagent", "call-mismatch", {
+      content: [{ type: "text", text: "detached" }],
+      details: { mode: "workflow", runId: "async-run", asyncId: "async-run", asyncDir: dir, results: [] },
+    }));
+    await adapter.refreshAsync();
+    const member = onlyChild(runtime);
+    assert.equal(member.role, "executor");
+    assert.equal(member.agent, "executor");
+    assert.equal(member.model, undefined);
+    assert.equal(member.title, "expected-key");
+    assert.deepEqual(member.preview, ["Running edit"]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("async members prefer artifact step agent/model and keep last two output lines", async () => {
   const dir = mkdtempSync(join(tmpdir(), "team-status-artifact-"));
   const snapshot = {

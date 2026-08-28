@@ -122,3 +122,23 @@ role 被错误降级为 `other`、model 缺失。
 - 自动测试已覆盖该真实形状 fixture 并转绿；真实 TUI/stock pi-web 复测仍为
   **⛔ PENDING RE-TEST**，与 Gate 5–8 一起保持待办，未标记为 PASS。
 - 未触碰 `~/.pi/agent/settings.json`，未启动/停止任何 pi-web 进程，未改动只读上游 checkout。
+
+## 位置不变量源码证据与 workflowKey 关联守卫（复审修复）
+
+复审发现 async 成员的 role/agent/model 依赖**位置不变量**：
+`status.json` 的 `steps[childIndex]` ↔ 公开 `asyncSnapshot` 的 `run.children[childIndex]`。
+对安装的 pi-subagents 0.56.0 源码逐行核对，当前顺序确实有效：
+
+| 证据 | 源码位置（安装包 0.56.0） | 观察 |
+|---|---|---|
+| 持久化把 `status.steps` 以 map 保持顺序拷入 `liveJob.steps` | `pi-subagents/src/runs/foreground/subagent-executor.ts:4518`（`liveJob.steps = status.steps.map((step, index) => ({ ...step, index }))`）；`:4519` 同步 `liveJob.agents` | ✅ 保持顺序 |
+| 快照对 `job.steps` 用 map 保持顺序构建 step 子节点 | `pi-subagents/src/runs/background/async-status-snapshot.ts:214`（`job.steps?.map((step, index) => buildStepNode(step, step.index ?? index, 1, ctx))`） | ✅ 保持顺序，无重排 |
+| 子节点按前缀截断（`maxChildrenPerNode`） | `async-status-snapshot.ts:147`（`children.push(...source.slice(0, remaining))`，`:217` 对 `[...stepChildren, ...nestedChildren]`） | ✅ 前缀截断，不重排 |
+| 公开 step `node.id` 即 `workflowKey`（缺省 `runId`，再缺省 `step:N`） | `async-status-snapshot.ts:155` | ✅ 关联提示可验证 |
+
+尽管如此，仍增加防御：`AsyncStepProjection` 携带净化后的可选 `workflowKey`（仅内存，
+绝不写入 Team DTO）。当非空 `workflowKey` 与公开 node `id` 不一致（且 node id 非合成
+`step:N`）时，丢弃整份 artifact 投影，回退到公开 node `label`/`currentTool`；关联提示缺失
+时仍接受已验证的位置不变量（兼容旧/plain run 形状）。合成/root 回退路径不变。
+
+Gate 5–8 与真实 TUI/stock pi-web 复测仍保持 **⛔ PENDING RE-TEST**，未标记为 PASS。
