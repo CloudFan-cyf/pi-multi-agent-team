@@ -9,7 +9,8 @@
  * 依赖：pi-subagents（subagent 工具与 agent 定义加载）。
  * 角色定义见本包 agents/ 目录，编排协议见 skills/team-orchestration/。
  */
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { getAgentDir, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { registerTeamStatus } from "./team-status/controller.ts";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
@@ -211,7 +212,7 @@ function writeLeaderSpec(spec: string | null): void {
 
 function report(ctx: ExtensionContext, message: string, kind: "info" | "error" | "success" = "info"): void {
   if (ctx.hasUI) {
-    ctx.ui.notify(message, kind);
+    ctx.ui.notify(message, kind === "success" ? "info" : kind);
   } else {
     console.log(`[${kind}] ${message}`);
   }
@@ -220,6 +221,8 @@ function report(ctx: ExtensionContext, message: string, kind: "info" | "error" |
 // ---------- /team：激活协作模式 ----------
 
 export default function (pi: ExtensionAPI) {
+  const teamStatus = registerTeamStatus(pi, { agentDir: getAgentDir() });
+
   pi.registerCommand("team", {
     description: "激活多 Agent 协作模式：切换主会话到领导者模型（GPT5.6 Sol）并加载 team-orchestration 编排协议",
     handler: async (_args, ctx) => {
@@ -259,6 +262,7 @@ export default function (pi: ExtensionAPI) {
 
       // 4. 加载编排协议 skill（激活协作模式）
       await pi.sendUserMessage("/skill:team-orchestration", { deliverAs: "followUp", expandPromptTemplates: true });
+      teamStatus.activateTeam(ctx, "Team 协作模式");
       report(ctx, "协作模式激活：编排协议已作为 follow-up 加载", "success");
     },
   });
@@ -465,7 +469,7 @@ export default function (pi: ExtensionAPI) {
         const override = role.agent ? currentOverride(role.agent) : null;
         const leaderInfo = role.agent ? null : resolveLeaderSpecInfo();
         const effective = role.agent
-          ? (override === AUTO ? roleDefaultSpec(role) : override)
+          ? (override === AUTO ? roleDefaultSpec(role) : override!)
           : leaderInfo!.spec;
         const isDefault = role.agent
           ? effective === roleDefaultSpec(role)
