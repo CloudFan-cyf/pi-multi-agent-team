@@ -3,7 +3,7 @@
 多 agent 派发一律走 `workflowScript`（含单个子 agent）。多轮团队工作必须用
 **async workflow + mission**（见 SKILL.md「编排状态与恢复」）。这里给出可直接抄用的配方。
 
-> **API 约定（pi-subagents@0.56.0）**：
+> **API 约定（pi-subagents@0.62.0）**：
 > - `runs.all([{ key, agent, task }, ...])` 接受**对象数组**，返回有序数组（用索引/解构/`.map`，不用 `results.<key>`）；
 > - `resume` 与 `agent` **互斥**，续作沿用原 agent/model/工具契约；resume item 不接受 `gate`；
 > - keyed resume：`resume: { workflowRunId, key, latest: true }`（源 workflow 必须已 terminal，靠其 `workflow-receipt.json`）；
@@ -26,7 +26,10 @@ subagent({
 
     const exec = await runs.run(laneKey, {
       agent: "executor",
+      label: "executor",           // Team panel 在 artifact 就绪前也能立即识别角色
       context: "fresh",            // 初次子 Agent 一律 fresh context
+      timeoutMs: 7200000,           // 2 小时仅作安全兜底；常规控制走 8 分钟软时限
+      control: { activeNoticeAfterMs: 480000 },
       task: \`<任务包，按 references/task-packets.md 规范构造>\`
     });
     if (exec.error || exec.timedOut || exec.stopped || !exec.runId) {
@@ -54,13 +57,14 @@ subagent({
     };
   `,
   mission: { title: "团队任务：<任务名>", objective: "<一句话目标>" },
-  async: true
+  async: true,
+  timeoutMs: 7200000
 })
 // 领导者记录回执：missionId = details.missionId；workflowRunId = 本 workflow 顶层 run id；
 // stable keys = [t1]。下一轮 reviewer workflow 显式使用同一 missionId。
 ```
 
-该顶层 async workflow 在 executor 与 state 写入完成后立即 terminal；普通 async completion wake 会通知领导者。领导者读取执行汇报并确认成功后，才启动阶段 2。
+该顶层 async workflow 在 executor 与 state 写入完成后立即 terminal；普通 async completion wake 会通知领导者。若 executor 先达到 8 分钟软时限，Team extension 会唤醒领导者一次；领导者先 status，再显式 steer 请求 checkpoint，并决定继续、收敛或 interrupt。2 小时 timeout 仅是安全兜底。领导者读取执行汇报并确认成功后，才启动阶段 2。
 
 ## 阶段 2：fresh reviewer（独立 workflow）
 
@@ -180,6 +184,9 @@ subagent({
       // 跨 workflow 优先 keyed receipt；key 必须是上一轮该 child 的实际启动 key（= lane.latestWorkflowKey）；
       // 同父会话拿不到 receipt 时可改用 resume: lane.latestRunId 补救
       resume: { workflowRunId: sourceWorkflowRunId, key: lane.latestWorkflowKey, latest: true },
+      label: "executor",           // resume 不传 agent；用展示 label 避免 Team panel 回退 other
+      timeoutMs: 7200000,          // 2 小时仅作安全兜底；常规控制走 8 分钟软时限
+      control: { activeNoticeAfterMs: 480000 },
       task: \`<resume 续作包：仅裁决后采纳 findings + 仍适用约束 + 验证标准
              （references/task-packets.md「续作任务包」）>\`
     });
@@ -206,12 +213,13 @@ subagent({
   `,
   missionId: "<同一 missionId>",
   async: true,
+  timeoutMs: 7200000,
   isolation: "none"   // retained resume 需要共享 cwd；不得 worktree: true
 })
 // 领导者记录本轮 workflowRunId；下一阶段 reviewer workflow 显式使用同一 missionId。
 ```
 
-该 fix workflow 在写入 `fix-done-pending-review` 后立即 terminal，领导者收到完成提醒并核验修复报告，再启动复审阶段。
+该 fix workflow 在写入 `fix-done-pending-review` 后立即 terminal，领导者收到完成提醒并核验修复报告，再启动复审阶段。若先达到 8 分钟软时限，处理方式与初次 executor 相同：status → 显式 steer 请求 checkpoint → 领导者裁决；不自动终止或 fresh fallback。
 
 ## 复审阶段：fresh reviewer（独立 workflow）
 

@@ -5,12 +5,14 @@
  * /team-models  为每个角色（含 reviewer）选择本机可用的模型（两级导航 provider→model）；也可参数形式
  * /team-fallback 管理子 agent 的 fallback 链（设整链/重置/清除/显示）
  * /team-doctor  迁移/环境体检：模型、fallback 链、agent、工具逐项检查
+ * executor 软时限：把 pi-subagents control event 转为一次 Leader wake，不自动终止或 steer。
  *
- * 依赖：pi-subagents（subagent 工具与 agent 定义加载）。
+ * 依赖：pi-subagents（subagent 工具、control event 与 agent 定义加载）。
  * 角色定义见本包 agents/ 目录，编排协议见 skills/team-orchestration/。
  */
 import { getAgentDir, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { registerTeamStatus } from "./team-status/controller.ts";
+import { registerTeamControl } from "./team-control.ts";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
@@ -222,6 +224,7 @@ function report(ctx: ExtensionContext, message: string, kind: "info" | "error" |
 
 export default function (pi: ExtensionAPI) {
   const teamStatus = registerTeamStatus(pi, { agentDir: getAgentDir() });
+  registerTeamControl(pi);
 
   pi.registerCommand("team", {
     description: "激活多 Agent 协作模式：切换主会话到领导者模型（GPT5.6 Sol）并加载 team-orchestration 编排协议",

@@ -15,7 +15,7 @@
 ## 前置依赖
 
 - pi（coding agent）
-- `pi-subagents`：子 agent 执行底座（agent 定义也经其加载）
+- `pi-subagents >= 0.62.0`：子 agent 执行底座（agent 定义、控制事件与 steer 也经其提供）
 - `pi-web-access`：提供 `web_search` / `fetch_content`（deep-researcher 的外部调研能力；缺失时仅该角色降级，其余功能不受影响）
 
 ## 安装（新机器三步迁移）
@@ -164,6 +164,8 @@ pi-subagents 的 **async workflow + mission** 能力续作，**不新增任何�
 - **Superpowers 对齐**：`superpowers:writing-plans` 计划中的一个完整 `### Task N` 对应一次 executor 执行与一次 task-scoped reviewer；Task 内 Steps 由同一 executor 顺序完成，精确要求通过 `task-brief` 交付。
 - **机械就绪门**：缺少精确文件、操作、验证或仍需设计判断的计划单元返回领导者，不通过扩大 executor 职责来强行执行。
 - **逐 subagent 完成提醒**：executor、reviewer、fix、re-review 分别结束顶层 async workflow；每个角色完成后领导者都会收到 completion wake，核验当前结果与 lane phase 后再启动下一阶段。
+- **executor 软时限**：fresh/fix executor 运行 8 分钟会通过 pi-subagents control event 唤醒领导者一次；领导者显式 status + steer 请求 checkpoint，再决定继续、收敛或 interrupt。2 小时 hard timeout 只作安全兜底，不用 reload 代替控制。
+- **resume 角色投影**：executor fresh/fix 配方显式使用 `label: "executor"`；resume 仍不传 `agent`，但 Team panel 在 artifact 就绪前也不会回退为 `other`。
 - **评审门仍强制**：拆分 workflow 只改变提醒边界，不取消 executor 后的 fresh reviewer，也不允许失败 executor 进入评审。
 
 编排协议细节见 `skills/team-orchestration/SKILL.md`「编排状态与恢复」，配方与任务包模板见
@@ -184,7 +186,8 @@ pi-subagents 的 **async workflow + mission** 能力续作，**不新增任何�
 │           ├── task-packets.md  # 通用/计划对齐任务包，以及初次/续作/重建三形态
 │           └── workflows.md     # 分阶段 workflowScript 配方（逐角色通知、resume 续作与恢复索引）
 ├── extensions/
-│   └── index.ts                 # /team /team-models /team-fallback /team-doctor
+│   ├── index.ts                 # /team /team-models /team-fallback /team-doctor
+│   └── team-control.ts          # executor 软时限事件 → 单次 Leader wake
 └── package.json                 # pi manifest
 ```
 
@@ -197,7 +200,7 @@ pi-subagents 的 **async workflow + mission** 能力续作，**不新增任何�
 
 ## 安全说明
 
-本包不含可执行安装脚本；扩展代码仅做模型切换、settings JSON 合并与命令注册。子 agent 的实际权限由 pi-subagents 的工具白名单控制（researcher/challenger 为只读，executor 为正常内置工具集）。
+本包不含可执行安装脚本；扩展代码负责模型切换、settings JSON 合并、命令注册，以及把 executor 软时限 control event 转成一次 Leader wake。子 agent 的实际权限由 pi-subagents 的工具白名单控制（researcher/challenger 为只读，executor 为正常内置工具集）。
 
 ## License
 
