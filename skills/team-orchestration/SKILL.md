@@ -44,9 +44,9 @@ description: 多 Agent 协作团队编排协议（/team 激活）。GPT5.6 Sol �
 
 ## 强制评审门（review gate）
 
-**每个 executor 任务包完成后，必须立即派 reviewer 评审该产出，然后将执行汇报与评审报告一起呈交你裁决。没有例外**——琐碎任务也不例外：轻量模型评审很便宜，漏掉的 bug 很贵。
+每个 executor 任务包完成后，executor 所在顶层 async workflow 必须先 terminal，让领导者收到完成提醒并核验结果；随后立即启动独立的 fresh reviewer workflow。reviewer 完成后其 workflow 再 terminal，领导者收到第二次提醒并裁决。没有例外。
 
-- 配对规则：1 个任务包 = 1 次 executor 执行 + 1 次 reviewer 评审；并行批次 = N 对配对（见 workflows.md「初次执行 + fresh reviewer」配方）
+- 配对规则：1 个任务包 = 1 次 executor workflow + 1 次 reviewer workflow；并行批次仍是 N 对配对
 - 评审任务包构造规范见 references/task-packets.md「评审任务包」
 - **修复闭环**：reviewer 报 Critical/Important 且你裁决采纳的，派回原 executor 修复；修复后**必须再过一次 reviewer**，直到 verdict 为通过或你显式接受剩余风险。修复是多轮续作：必须 `resume` 原 executor 并持久化 mission state，见「编排状态与恢复」
 
@@ -68,7 +68,11 @@ description: 多 Agent 协作团队编排协议（/team 激活）。GPT5.6 Sol �
 2. **设计明确吗？** 不明确（接口形态、结构、选型待定）→ 你先做设计（可先派 researcher 查资料）
 3. **是机械任务吗？** 已明确到「改哪些文件、怎么改、怎么验证」→ 派 executor；仍需设计判断 → 你自己做这块设计，再把机械部分拆给 executor
 
-**规模判断**：一个任务包预计 <15 分钟机械工作量可派 executor；多个独立同构任务（如批量处理 10 个文件）合并成一个 workflowScript 并行批次（遵守「并行派发纪律」）。
+### 有现成计划时
+
+显式计划文件存在时，不再从对话重新拆 executor 任务包。先选择计划的一个**计划原生执行单元**，按 `references/task-packets.md`「计划对齐模式」构造任务包并完成机械就绪检查。Superpowers 计划默认一个完整 `### Task N` 对应一个 executor 与一个 task-scoped reviewer，Task 内 Steps 不二次切片。未通过机械就绪检查的单元返回领导者裁决，不升级 executor 权责。
+
+**规模判断**：一个任务包预计 <15 分钟机械工作量可派 executor；多个独立同构任务通过多个独立顶层 async workflow 并行运行，每个 executor 各自完成并提醒领导者（遵守「并行派发纪律」）。
 
 ## 标准流程
 
@@ -79,10 +83,10 @@ description: 多 Agent 协作团队编排协议（/team 激活）。GPT5.6 Sol �
   → 设计（你；必要时先 fan-out researcher）
   → challenge（派 challenger 审设计，见下）
   → 收敛（你裁决 findings：采纳/驳回+理由）
-  → 拆任务包（你，按 task-packets 规范；独立域拆包以便并行）
-  → 并行执行（executor×N，独立任务包用 runs.all；见「并行派发纪律」）
-  → 评审门（每个 executor 汇报后立即派 reviewer 审对应产出；
-     执行汇报 + 评审报告一起呈交你）
+  → 组织任务包（无计划：按四要素蒸馏；有计划：选择一个计划原生执行单元并做机械就绪检查）
+  → executor 阶段（每个 executor 独立顶层 async workflow；完成后 workflow terminal 并提醒领导者）
+  → 领导者核验 executor 结果与 lane state
+  → reviewer 阶段（每条 lane 独立 fresh reviewer workflow；完成后 workflow terminal 并再次提醒领导者）
   → 裁决与修复闭环（按「接收评审纪律」裁决；采纳项 resume 原 executor 修，
      修复后重过 reviewer，直到通过或你显式接受剩余风险；修复/复审轮必须
      走 async workflow + mission state 续作，见「编排状态与恢复」）
@@ -113,13 +117,13 @@ description: 多 Agent 协作团队编排协议（/team 激活）。GPT5.6 Sol �
     否（相关/同文件/共享状态）→ 串行，或合并为一个任务包
     是 → 能同时跑吗（无共享文件/资源冲突）？
       否 → 串行
-      是 → 并行派发（一个任务包一个 executor，同一 workflowScript runs.all）
+      是 → 并行派发（一个任务包一个顶层 async executor workflow，各自 terminal 并通知）
 ```
 
 - **一个任务包 = 一个明确的问题域**：范围、目标、约束、期望输出都清晰；不是「把这些都修了」
 - **任务包自包含**：每个 executor 只拿到自己域需要的上下文，不依赖其他 executor 的产出
 - **返回后整合**（依次执行，不可跳）：
-  1. 逐个读执行汇报（与对应 reviewer 评审报告一起读）
+  1. 每个 executor wake 后先读执行汇报并启动对应 reviewer；reviewer wake 后再读评审报告
   2. **查冲突**：多个 executor 是否改了同一文件/同一区域？冲突项需你裁决合并顺序
   3. **跑全量测试**：局部全绿不等于整体绿
   4. **抽查**：executor 可能犯系统性错误，抽查关键文件
@@ -128,12 +132,11 @@ description: 多 Agent 协作团队编排协议（/team 激活）。GPT5.6 Sol �
 
 多轮团队工作（初次执行 → 评审 → 裁决 → 修复 → 复审 → 验收，以及 challenger 第 1/2 轮）是跨
 workflow 的续作，必须用 **async workflow + mission** 承载，用 **mission state** 持久化进度。
-以下纪律对领导者强制生效。
+executor、reviewer、fix、re-review 分别使用独立的顶层 async workflow，并通过同一 lane 的 missionId 串联。以下纪律对领导者强制生效。
 
 ### 1. 多轮工作 = async workflow + mission
 
-- 多轮团队工作一律 `subagent({ workflowScript, mission: {...}, async: true })`；**禁止 `mission:false`**
-  （`mission:false` 的 workflow 没有 `state` 全局，无法持久化进度，也不能跨 workflow 续作）。
+- 多轮团队工作的每个角色阶段一律 `subagent({ workflowScript, mission/missionId, async: true })`；**禁止 `mission:false`**。首个 executor workflow 创建 mission，reviewer/fix/re-review workflow 显式复用其 missionId。
 - 首个 workflow 创建 mission，从回执 `details.missionId` 捕获 missionId；**后续每个 workflow 必须显式传
   同一 `missionId`**，否则会静默新建 mission、拿到空 state。
 - 续作 lane（executor 修复、challenger 第 2 轮）需要会话文件留在共享 cwd，外层 workflow 用
@@ -176,20 +179,19 @@ workflow 的续作，必须用 **async workflow + mission** 承载，用 **missi
   写入）；`acceptedFindings` 最多 5 条、每条 ≤ 120 字；全文留在 run/output artifact（记入
   `artifactRefs`），不塞进 state（state 文件上限 256 KiB）。
 - **`state.set` 失败必须停止续作**：写不进去就停下上报领导者，绝不「无状态继续」。
-- 每次 resume 返回新 `runId`，**必须先 `state.set` 更新 `lane.<laneKey>.latestRunId` 再启动 reviewer**；
-  循环内永远从最新返回的 runId 继续。
+- 每次 resume 返回新 `runId`，**必须先 `state.set` 更新 `lane.<laneKey>.latestRunId` 并置为 `fix-done-pending-review`，再结束 fix workflow**；后续 reviewer 由领导者收到完成提醒并核验后启动。
 
 ### 4. phase 状态机（至少这些状态）
 
-`implementation-done-pending-review` → `reviewed`（附 reviewRunId；reviewVerdict 占位「待领导者裁决」）
-→（领导者裁决回写，见 workflows.md「领导者裁决后回写 state」配方）无采纳的 Critical/Important →
-`accepted`；有采纳的 Critical/Important → `needs-fix` → `fixing`（resume 启动修复，见 workflows.md
-修复配方）→ `fix-done-pending-review` → `reviewed` →（裁决回写）`accepted`；
+`executing` → `implementation-done-pending-review` → `reviewing` → `reviewed`（附 reviewRunId；reviewVerdict 占位「待领导者裁决」）→（领导者裁决回写）无采纳的 Critical/Important → `accepted`；有采纳项 → `needs-fix` → `fixing` → `fix-done-pending-review` → `reviewing` → `reviewed` →（裁决回写）`accepted`。
+
+**完成提醒边界**：executor 完成后 workflow terminal，领导者收到完成提醒；reviewer 完成后 workflow terminal，领导者收到完成提醒。fix 与 re-review 也分别使用独立的顶层 async workflow，并在各自完成后通知领导者。不得为了自动串接下一角色而让当前 workflow 保持运行；下一阶段由收到 completion wake 的领导者核验后启动。
+
 任何一处明确证明不可恢复并走 fresh fallback 时置 `fallback`（记录原因）。
 challenger lane 用 `challenging`（进行中）→ `reviewed`（附 findings）→（裁决回写：采纳需修订设计 →
 `needs-fix`；无阻塞 → `accepted`）→ 第 2 轮仅允许从 round=1 的 `reviewed` / `needs-fix` 续作，且
 第 2 轮后不再 resume challenger（领导者接受/裁决剩余风险），+ `round` 字段。
-phase 为 `fixing` / `challenging` 等**中间态**时，恢复前必须先 `status` / `subagent_wait` 确认上一轮
+phase 为 `reviewing` / `fixing` / `challenging` 等**中间态**时，恢复前必须先 `status` / `subagent_wait` 确认上一轮
 workflow 已 terminal、无在跑的 owning run（lease 冲突 = 已有续作在跑），**禁止对同一 lane 重复启动修复**。
 
 ### 5. 后续 workflow 开头自检
@@ -197,7 +199,7 @@ workflow 已 terminal、无在跑的 owning run（lease 冲突 = 已有续作在
 续作 workflow 开头必须 `await state.get("lane." + laneKey)`：
 - **lane 必须存在**，否则说明漏传 missionId 静默新建了 mission——停止续作，上报领导者核对 missionId。
 - phase 必须在可续作集合（`needs-fix` / `reviewed` 等），否则上报领导者，不盲目 resume。
-- phase 为 `fixing` / `challenging` 等**中间态**（上一轮可能未收尾）：先 `status` / `subagent_wait`
+- phase 为 `reviewing` / `fixing` / `challenging` 等**中间态**（上一轮可能未收尾）：先 `status` / `subagent_wait`
   确认上一轮 workflow 已 terminal、无在跑的 owning run，再决定是否 resume；**禁止重复启动同一 lane**。
 
 ### 6. 领导者回执记录
