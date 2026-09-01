@@ -68,6 +68,10 @@ description: 多 Agent 协作团队编排协议（/team 激活）。GPT5.6 Sol �
 2. **设计明确吗？** 不明确（接口形态、结构、选型待定）→ 你先做设计（可先派 researcher 查资料）
 3. **是机械任务吗？** 已明确到「改哪些文件、怎么改、怎么验证」→ 派 executor；仍需设计判断 → 你自己做这块设计，再把机械部分拆给 executor
 
+### 有现成计划时
+
+显式计划文件存在时，不再从对话重新拆 executor 任务包。先选择计划的一个**计划原生执行单元**，按 `references/task-packets.md`「计划对齐模式」构造任务包并完成机械就绪检查。Superpowers 计划默认一个完整 `### Task N` 对应一个 executor 与一个 task-scoped reviewer，Task 内 Steps 不二次切片。未通过机械就绪检查的单元返回领导者裁决，不升级 executor 权责。
+
 **规模判断**：一个任务包预计 <15 分钟机械工作量可派 executor；多个独立同构任务（如批量处理 10 个文件）合并成一个 workflowScript 并行批次（遵守「并行派发纪律」）。
 
 ## 标准流程
@@ -79,7 +83,7 @@ description: 多 Agent 协作团队编排协议（/team 激活）。GPT5.6 Sol �
   → 设计（你；必要时先 fan-out researcher）
   → challenge（派 challenger 审设计，见下）
   → 收敛（你裁决 findings：采纳/驳回+理由）
-  → 拆任务包（你，按 task-packets 规范；独立域拆包以便并行）
+  → 组织任务包（无计划：按四要素蒸馏；有计划：选择一个计划原生执行单元并做机械就绪检查）
   → 并行执行（executor×N，独立任务包用 runs.all；见「并行派发纪律」）
   → 评审门（每个 executor 汇报后立即派 reviewer 审对应产出；
      执行汇报 + 评审报告一起呈交你）

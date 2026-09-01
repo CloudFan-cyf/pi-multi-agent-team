@@ -160,6 +160,10 @@ pi-subagents 的 **async workflow + mission** 能力续作，**不新增任何�
 - **不承诺任意新父会话可恢复**：恢复路径限定在**同一持久父会话 + 同一 mission**；跨全新独立
   父会话的恢复遵循 pi-subagents 当前的所有权/会话约束，不做额外保证。
 
+- **任务包双模式**：无计划时继续使用目标/约束/相关文件/验收标准四要素任务包；有计划时任务包必须绑定计划原生执行单元，不能再次任意切片或扩张。
+- **Superpowers 对齐**：`superpowers:writing-plans` 计划中的一个完整 `### Task N` 对应一次 executor 执行与一次 task-scoped reviewer；Task 内 Steps 由同一 executor 顺序完成，精确要求通过 `task-brief` 交付。
+- **机械就绪门**：缺少精确文件、操作、验证或仍需设计判断的计划单元返回领导者，不通过扩大 executor 职责来强行执行。
+
 编排协议细节见 `skills/team-orchestration/SKILL.md`「编排状态与恢复」，配方与任务包模板见
 `skills/team-orchestration/references/`。
 
@@ -175,7 +179,7 @@ pi-subagents 的 **async workflow + mission** 能力续作，**不新增任何�
 │   └── team-orchestration/
 │       ├── SKILL.md             # 编排协议：路由/流程/评审门/并行纪律/升级规则
 │       └── references/
-│           ├── task-packets.md  # 任务包构造规范（初次/续作/重建三形态，含评审任务包）
+│           ├── task-packets.md  # 通用/计划对齐任务包，以及初次/续作/重建三形态
 │           └── workflows.md     # workflowScript 编排配方（执行+评审门、resume 续作与恢复索引）
 ├── extensions/
 │   └── index.ts                 # /team /team-models /team-fallback /team-doctor
