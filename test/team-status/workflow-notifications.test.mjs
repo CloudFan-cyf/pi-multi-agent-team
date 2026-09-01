@@ -20,6 +20,39 @@ function section(start, end) {
   return workflows.slice(from, to);
 }
 
+function captureRecipe(sectionText) {
+  const block = sectionText.match(/```js\r?\n([\s\S]*?)```/)?.[1];
+  assert.ok(block, "recipe must contain a JavaScript block");
+  let call;
+  new Function("subagent", block)((params) => {
+    call = params;
+  });
+  assert.ok(call, "recipe must call subagent");
+  return call;
+}
+
+async function executeWorkflowRecipe(call, initialEntries = []) {
+  const memory = new Map(initialEntries);
+  const runCalls = [];
+  const state = {
+    async get(key) {
+      return memory.get(key);
+    },
+    async set(key, value) {
+      memory.set(key, value);
+    },
+  };
+  const runs = {
+    async run(key, params) {
+      runCalls.push({ key, params });
+      return { runId: `${key}-run`, output: "ok", artifactPaths: [] };
+    },
+  };
+  const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
+  await new AsyncFunction("state", "runs", call.workflowScript)(state, runs);
+  return { runCalls, memory };
+}
+
 test("initial executor workflow ends before the reviewer workflow starts", () => {
   const executor = section(
     "## 阶段 1：初次 executor（完成即通知）",
@@ -59,6 +92,43 @@ test("fix and re-review are separate guarded workflows", () => {
   assert.match(reReview, /agent: "reviewer"/);
   assert.equal((reReview.match(/runs\.run\(/g) ?? []).length, 1);
   assert.match(reReview, /phase: "reviewed"/);
+});
+
+test("executor recipes expose the role immediately and use soft control with a distant hard backstop", async () => {
+  const initial = captureRecipe(section(
+    "## 阶段 1：初次 executor（完成即通知）",
+    "## 阶段 2：fresh reviewer（独立 workflow）",
+  ));
+  const initialExecution = await executeWorkflowRecipe(initial);
+
+  assert.equal(initial.timeoutMs, 7_200_000);
+  assert.equal(initialExecution.runCalls.length, 1);
+  assert.equal(initialExecution.runCalls[0].params.label, "executor");
+  assert.equal(initialExecution.runCalls[0].params.timeoutMs, 7_200_000);
+  assert.deepEqual(initialExecution.runCalls[0].params.control, { activeNoticeAfterMs: 480_000 });
+
+  const fix = captureRecipe(section(
+    "## 修复阶段：resume 原 executor（完成即通知）",
+    "## 复审阶段：fresh reviewer（独立 workflow）",
+  ));
+  const fixExecution = await executeWorkflowRecipe(fix, [["lane.t1", {
+    version: 1,
+    laneKey: "t1",
+    role: "executor",
+    phase: "needs-fix",
+    round: 1,
+    latestRunId: "executor-run-1",
+    latestWorkflowKey: "t1",
+    acceptedFindings: ["fix this"],
+    artifactRefs: [],
+  }]]);
+
+  assert.equal(fix.timeoutMs, 7_200_000);
+  assert.equal(fixExecution.runCalls.length, 1);
+  assert.equal(fixExecution.runCalls[0].params.label, "executor");
+  assert.equal(fixExecution.runCalls[0].params.timeoutMs, 7_200_000);
+  assert.deepEqual(fixExecution.runCalls[0].params.control, { activeNoticeAfterMs: 480_000 });
+  assert.equal("agent" in fixExecution.runCalls[0].params, false);
 });
 
 test("workflow JavaScript examples remain syntactically valid", () => {

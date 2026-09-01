@@ -74,6 +74,21 @@ description: 多 Agent 协作团队编排协议（/team 激活）。GPT5.6 Sol �
 
 **规模判断**：一个任务包预计 <15 分钟机械工作量可派 executor；多个独立同构任务通过多个独立顶层 async workflow 并行运行，每个 executor 各自完成并提醒领导者（遵守「并行派发纪律」）。
 
+### executor 软时限（强制）
+
+executor 的初次执行与 fix 续作都必须按 `references/workflows.md` 设置：展示 `label: "executor"`、
+`control.activeNoticeAfterMs: 480000`（8 分钟），以及 child/外层 workflow 的
+`timeoutMs: 7200000`（2 小时安全兜底）。8 分钟是软时限，不是终止信号；不得因超时提醒而
+`/reload`、stop 或 fresh fallback。
+
+Team extension 收到 executor 的 async `active_long_running/time_threshold` 事件后，只唤醒领导者一次。
+领导者必须先查询该 run 状态，再显式 `steer` 原 executor，要求在当前工具结束后汇报 changed files、
+测试状态、剩余工作和阻塞。读完 checkpoint 后由领导者决定：继续、要求尽快收敛，或用
+`interrupt` 可恢复暂停。插件不替领导者自动 steer，也不自动终止子 agent。
+
+resume 仍不得传 `agent`；`label: "executor"` 只是公开展示身份，避免 artifact 尚未就绪时 Team panel
+把 workflow key 映射为 `other`，不改变 retained agent/model/tool 契约。
+
 ## 标准流程
 
 ### 功能开发流
@@ -144,8 +159,8 @@ executor、reviewer、fix、re-review 分别使用独立的顶层 async workflow
 
 ### 2. 初次用 agent，续作用 resume
 
-- **初次执行/初次评审**：`runs.run(key, { agent, task, context: "fresh" })`（保持初次子 Agent fresh context）。
-- **修复轮、challenger 第 2 轮**：必须 `resume`（`resume: "<runId>"` 或 keyed receipt）。
+- **初次执行/初次评审**：`runs.run(key, { agent, task, context: "fresh" })`（保持初次子 Agent fresh context）；executor 额外使用 `label: "executor"` 与上述软/硬时限参数。
+- **修复轮、challenger 第 2 轮**：必须 `resume`（`resume: "<runId>"` 或 keyed receipt）；executor fix 额外使用 `label: "executor"` 与上述软/硬时限参数。
 - **相同 key + 重新传 agent 启动不是恢复**——那是丢失续作链路后当新会话跑，上下文不延续。
 - `resume` 与 `agent` 互斥：续作沿用原 agent/model/工具契约，不换角色配置；resume item 不接受 `gate`。
 
