@@ -52,7 +52,7 @@ pi install git:github.com/CloudFan-cyf/pi-multi-agent-team
 
 > 注意：模型切换使用 pi 的 `setModel`，它会同步写入全局 `defaultModel`（即 `/team` 会把 pi 默认模型改为领导者模型）。不希望长期生效时，可用 `pi -m <model>` 启动参数或 `/model` 命令改回。
 
-激活后，主会话即按编排协议工作：设计必经 challenger 审查（≤2 轮收敛）、研究问题 fan-out 给 researcher、独立域任务包并行派给 executor（runs.all）、每个执行后必经 reviewer 评审门（执行汇报与评审报告一起呈交领导者）。
+激活后，主会话即按编排协议工作：设计必经 challenger 审查（≤2 轮收敛）、研究问题 fan-out 给 researcher、独立域任务包可用各自的顶层 async workflow 并行执行；每个 executor 完成先提醒领导者，再进入独立 reviewer 评审门。
 
 ### `/team-models` — 角色模型选择
 
@@ -163,6 +163,8 @@ pi-subagents 的 **async workflow + mission** 能力续作，**不新增任何�
 - **任务包双模式**：无计划时继续使用目标/约束/相关文件/验收标准四要素任务包；有计划时任务包必须绑定计划原生执行单元，不能再次任意切片或扩张。
 - **Superpowers 对齐**：`superpowers:writing-plans` 计划中的一个完整 `### Task N` 对应一次 executor 执行与一次 task-scoped reviewer；Task 内 Steps 由同一 executor 顺序完成，精确要求通过 `task-brief` 交付。
 - **机械就绪门**：缺少精确文件、操作、验证或仍需设计判断的计划单元返回领导者，不通过扩大 executor 职责来强行执行。
+- **逐 subagent 完成提醒**：executor、reviewer、fix、re-review 分别结束顶层 async workflow；每个角色完成后领导者都会收到 completion wake，核验当前结果与 lane phase 后再启动下一阶段。
+- **评审门仍强制**：拆分 workflow 只改变提醒边界，不取消 executor 后的 fresh reviewer，也不允许失败 executor 进入评审。
 
 编排协议细节见 `skills/team-orchestration/SKILL.md`「编排状态与恢复」，配方与任务包模板见
 `skills/team-orchestration/references/`。
@@ -180,7 +182,7 @@ pi-subagents 的 **async workflow + mission** 能力续作，**不新增任何�
 │       ├── SKILL.md             # 编排协议：路由/流程/评审门/并行纪律/升级规则
 │       └── references/
 │           ├── task-packets.md  # 通用/计划对齐任务包，以及初次/续作/重建三形态
-│           └── workflows.md     # workflowScript 编排配方（执行+评审门、resume 续作与恢复索引）
+│           └── workflows.md     # 分阶段 workflowScript 配方（逐角色通知、resume 续作与恢复索引）
 ├── extensions/
 │   └── index.ts                 # /team /team-models /team-fallback /team-doctor
 └── package.json                 # pi manifest

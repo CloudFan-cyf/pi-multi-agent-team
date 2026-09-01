@@ -10,10 +10,10 @@
 > - 后续 workflow 显式 `async: true` 且附**同一 `missionId`**；续作 lane 外层用 `isolation:none`（共享 cwd），不得 `worktree: true`；
 > - 有 mission 的 workflow 内可用 `await state.get(key)` / `await state.set(key, value)`（`mission:false` 没有 `state` 全局）。
 
-## 初次执行 + fresh reviewer（标准配方，强制评审门）
+## 阶段 1：初次 executor（完成即通知）
 
-初次执行用 `agent`（fresh context），完成后**立即**派 fresh reviewer；两段结果都增量写进
-mission state。调用方 `async: true`；返回**精简 run refs**，全文留在 run 记录（保护领导者上下文）。
+初次执行用 `agent`（fresh context）。这个顶层 async workflow 只运行 executor、校验终态并写入
+`implementation-done-pending-review`；不在同一 workflow 内启动 reviewer。
 
 ```js
 subagent({
@@ -29,8 +29,9 @@ subagent({
       context: "fresh",            // 初次子 Agent 一律 fresh context
       task: \`<任务包，按 references/task-packets.md 规范构造>\`
     });
-    // 护栏：executor 必须返回 retained run id，否则停止，绝不无状态写 state 继续
-    if (!exec.runId) throw new Error("exec 未返回 retained run id，停止上报领导者");
+    if (exec.error || exec.timedOut || exec.stopped || !exec.runId) {
+      throw new Error("executor 未成功完成：" + (exec.error ?? "缺少 retained run id"));
+    }
     // 增量写 state：executor 完成
     await state.set("lane." + laneKey, {
       version: 1, laneKey, role: "executor",
@@ -46,109 +47,70 @@ subagent({
       await state.set("taskboard", { ...board, laneKeys: [...board.laneKeys, laneKey] });
     }
 
+    return {
+      laneKey,
+      execRunId: exec.runId,
+      execSummary: (exec.output ?? "").slice(0, 400)
+    };
+  `,
+  mission: { title: "团队任务：<任务名>", objective: "<一句话目标>" },
+  async: true
+})
+// 领导者记录回执：missionId = details.missionId；workflowRunId = 本 workflow 顶层 run id；
+// stable keys = [t1]。下一轮 reviewer workflow 显式使用同一 missionId。
+```
+
+该顶层 async workflow 在 executor 与 state 写入完成后立即 terminal；普通 async completion wake 会通知领导者。领导者读取执行汇报并确认成功后，才启动阶段 2。
+
+## 阶段 2：fresh reviewer（独立 workflow）
+
+reviewer 使用与阶段 1 相同的 `missionId` 和 `laneKey`。领导者把原任务包、executor 汇报与 diff 定位方式注入评审任务包。
+
+```js
+subagent({
+  workflowScript: `
+    const laneKey = "t1";
+    const lane = await state.get("lane." + laneKey);
+    if (!lane) throw new Error("lane " + laneKey + " 不存在：检查 missionId，停止评审");
+    if (lane.phase !== "implementation-done-pending-review") {
+      throw new Error("lane phase=" + lane.phase + " 不是 implementation-done-pending-review，停止评审");
+    }
+    await state.set("lane." + laneKey, { ...lane, phase: "reviewing" });
+
     const review = await runs.run(laneKey + "-review", {
       agent: "reviewer",
       context: "fresh",
-      task: \`<评审任务包：任务包原文 + 执行汇报 + 查看变更方式（references/task-packets.md「评审任务包」）>\`
+      task: \`<评审任务包：原任务包 + executor 汇报 + diff 定位方式>\`
     });
-    // reviewer 完成：phase → reviewed；verdict 不冒充，留待领导者裁决回写配方设置
-    const lane = await state.get("lane." + laneKey);
+    if (review.error || review.timedOut || review.stopped || !review.runId) {
+      throw new Error("reviewer 未成功完成：" + (review.error ?? "缺少 retained run id"));
+    }
+
+    const current = await state.get("lane." + laneKey);
     await state.set("lane." + laneKey, {
-      ...lane,
+      ...current,
       phase: "reviewed",
       reviewVerdict: "待领导者裁决",
       reviewRunId: review.runId,
       artifactRefs: [...(lane.artifactRefs ?? []), ...(review.artifactPaths ?? [])].slice(0, 5)
     });
-
-    // 返回精简 refs；完整 output 留在 run 记录
     return {
       laneKey,
-      execRunId: exec.runId,
       reviewRunId: review.runId,
-      execSummary: (exec.output ?? "").slice(0, 400),
       reviewSummary: (review.output ?? "").slice(0, 600)
     };
-  \`,
-  mission: { title: "团队任务：<任务名>", objective: "<一句话目标>" },
+  `,
+  missionId: "<同一 missionId>",
   async: true
 })
-// 领导者记录回执：missionId = details.missionId；workflowRunId = 本 workflow 顶层 run id；
-// stable keys = [t1]。下一轮把该 workflowRunId 作为 sourceWorkflowRunId 注入。
 ```
 
-## 并行初次执行 + 配对评审（对象数组 API）
+该 reviewer 是独立顶层 async workflow 的唯一 child。完成并写入 `reviewed` 后 workflow terminal，领导者收到第二次完成提醒并执行裁决回写。强制评审门没有取消，只从同一长 workflow 内部移动到 leader-visible 的下一阶段。
 
-独立域任务包并行，然后逐包配对评审（评审阶段也可并行）。`runs.all` 只接受对象数组。
-本片段运行在 `subagent({ workflowScript, mission: {...}, async: true })` 内（`mission:false` 没有 `state` 全局）：
+## 并行 executor：每个子 agent 独立通知
 
-```js
-const tasks = [
-  { key: "t1", task: `<任务包 1（独立域）>` },
-  { key: "t2", task: `<任务包 2（独立域）>` },
-  { key: "t3", task: `<任务包 3（独立域）>` },
-];
-// 初次执行自检：任何 lane 已存在都说明误重跑或 missionId/流程错误，禁止覆盖旧状态
-for (const item of tasks) {
-  if (await state.get("lane." + item.key)) {
-    throw new Error("lane " + item.key + " 已存在：这不是初次执行，检查 missionId/流程");
-  }
-}
-// 阶段 1：并行执行（仅独立域；相关任务包先串行或合并，见 SKILL.md「并行派发纪律」）
-const done = await runs.all(tasks.map(t => ({
-  key: t.key, agent: "executor", context: "fresh", task: t.task
-})));
+需要每个 executor 完成时分别提醒领导者，就不能把多个 executor 包在同一个 `runs.all` 顶层 workflow 中。独立域检查通过后，每个任务包各启动一个“阶段 1”顶层 async workflow；每条 lane 保存自己的 missionId、workflowRunId 与 child key。它们可以同时运行，但各自 terminal、各自产生 completion wake。对应 reviewer 只能在该 lane 的 executor wake 被领导者核验后启动。
 
-// 阶段 1.5：每个 executor 完成即写 lane state + 登记任务板 laneKeys
-for (let i = 0; i < done.length; i++) {
-  if (!done[i].runId) throw new Error("executor " + tasks[i].key + " 未返回 retained run id，停止上报领导者");
-  await state.set("lane." + tasks[i].key, {
-    version: 1, laneKey: tasks[i].key, role: "executor",
-    phase: "implementation-done-pending-review", round: 1,
-    latestRunId: done[i].runId, latestWorkflowKey: tasks[i].key,
-    reviewVerdict: "", acceptedFindings: [],
-    artifactRefs: (done[i].artifactPaths ?? []).slice(0, 5)
-  });
-}
-// taskboard 是 {version, laneKeys} 索引，只登记 lane 存在性（不复制 phase/runId，防双份漂移）
-const board = await state.get("taskboard") ?? { version: 1, laneKeys: [] };
-await state.set("taskboard", {
-  ...board,
-  laneKeys: [...new Set([...board.laneKeys, ...tasks.map(t => t.key)])]
-});
-
-// 阶段 2：逐包配对评审（reviewer 拿任务包原文 + 执行汇报）
-const reviews = await runs.all(tasks.map((t, i) => ({
-  key: t.key + "-review",
-  agent: "reviewer",
-  context: "fresh",
-  task: `## 被评审的任务包\n${t.task}\n\n## 执行者汇报\n${done[i].output}`
-})));
-
-// 阶段 2.5：reviewer 完成 → 各 lane phase → reviewed（verdict 留待领导者裁决回写）
-for (let i = 0; i < reviews.length; i++) {
-  const lane = await state.get("lane." + tasks[i].key);
-  await state.set("lane." + tasks[i].key, {
-    ...lane, phase: "reviewed",
-    reviewVerdict: "待领导者裁决",
-    reviewRunId: reviews[i].runId,
-    artifactRefs: [...(lane.artifactRefs ?? []), ...(reviews[i].artifactPaths ?? [])].slice(0, 5)
-  });
-}
-
-// 返回配对摘要（领导者按「接收评审纪律」裁决）
-return tasks.map((t, i) => ({
-  key: t.key,
-  execSummary: (done[i].output ?? "").slice(0, 400),
-  reviewSummary: (reviews[i].output ?? "").slice(0, 600),
-}));
-```
-
-要点：
-- `key` 用稳定标识（任务编号/文件名），便于失败重派与修复闭环定位
-- 返回给领导者的是**摘要**（slice 截断），完整输出留在 run 记录里
-- 返回后必做「并行派发纪律」的整合三步：查冲突 → 全量测试 → 抽查
-- 每包建 `lane.<key>` state 并把 laneKey 登记进任务板（上配方已含）；读取按任务板 `laneKeys` 逐个 `state.get`（见「恢复索引 / 降级流程」）
 
 ## 领导者裁决后回写 state（可机械抄用）
 
@@ -184,17 +146,17 @@ subagent({
       acceptedFindings
     });
     return { laneKey, phase: needsFix ? "needs-fix" : "accepted" };
-  \`,
+  `,
   missionId: "<同一 missionId>",
   async: true
 })
 // 回写后：phase=accepted → 验收；phase=needs-fix → 走下方「领导者裁决后：resume 原 executor」修复配方。
 ```
 
-## 领导者裁决后：resume 原 executor → 立即写 latestRunId/latestWorkflowKey → fresh reviewer → 留待裁决回写
+## 修复阶段：resume 原 executor（完成即通知）
 
 裁决采纳 Critical/Important 后派回原 executor 修复。**修复必须 resume**（相同 key + 重新 agent
-不是恢复）。这是**跨 workflow** 的续作：外层附同一 `missionId`、`async: true`、`isolation: none`。
+不是恢复）。这个顶层 async workflow 只运行 fix 并写入 `fix-done-pending-review`；不在同一 workflow 内启动 reviewer。
 
 ```js
 subagent({
@@ -221,10 +183,11 @@ subagent({
       task: \`<resume 续作包：仅裁决后采纳 findings + 仍适用约束 + 验证标准
              （references/task-packets.md「续作任务包」）>\`
     });
-    // 护栏：resume 必须返回 retained run id，否则停止续作上报领导者，绝不无状态继续
-    if (!fix.runId) throw new Error("fix 未返回 retained run id，停止续作上报领导者");
+    if (fix.error || fix.timedOut || fix.stopped || !fix.runId) {
+      throw new Error("fix 未成功完成：" + (fix.error ?? "缺少 retained run id"));
+    }
 
-    // 每次 resume 后立即更新 latestRunId / latestWorkflowKey / phase，再启动 reviewer
+    // 每次 resume 后立即更新 latestRunId / latestWorkflowKey，并结束 fix workflow 等待领导者核验
     const fixed = await state.get("lane." + laneKey);
     await state.set("lane." + laneKey, {
       ...fixed,
@@ -235,45 +198,65 @@ subagent({
       resumeSource: { workflowRunId: sourceWorkflowRunId, key: lane.latestWorkflowKey, terminal: true }
     });
 
-    const review = await runs.run(laneKey + "-review-" + (lane.round + 1), {
-      agent: "reviewer",
-      context: "fresh",           // 每次修复后都是 fresh reviewer（强制评审门）
-      task: \`<修复后评审包：原始任务包 + 执行/修复汇报 + 查看变更方式 + 重点维度>\`
-    });
-
-    // 修复后评审完成：phase → reviewed；verdict 留待领导者裁决回写（不冒充 verdict）
-    const cur = await state.get("lane." + laneKey);
-    await state.set("lane." + laneKey, {
-      ...cur,
-      phase: "reviewed",
-      reviewVerdict: "待领导者裁决",
-      reviewRunId: review.runId,
-      artifactRefs: [...(cur.artifactRefs ?? []), ...(review.artifactPaths ?? [])].slice(0, 5)
-    });
-
     return {
-      laneKey, fixRunId: fix.runId, reviewRunId: review.runId,
-      reviewSummary: (review.output ?? "").slice(0, 600)
+      laneKey,
+      fixRunId: fix.runId,
+      fixSummary: (fix.output ?? "").slice(0, 400)
     };
-  \`,
+  `,
   missionId: "<同一 missionId>",
   async: true,
   isolation: "none"   // retained resume 需要共享 cwd；不得 worktree: true
 })
-// 领导者裁决：verdict 通过 → phase 置 accepted 并验收；仍有 Critical/Important → 再走一轮 needs-fix。
-// 新一轮修复：sourceWorkflowRunId = 本轮 workflowRunId，key = lane.latestWorkflowKey（已更新为 fixKey）。
+// 领导者记录本轮 workflowRunId；下一阶段 reviewer workflow 显式使用同一 missionId。
 ```
 
-跨 workflow 的 keyed receipt resume（手里没有 runId、但有源 workflow 回执时）：
+该 fix workflow 在写入 `fix-done-pending-review` 后立即 terminal，领导者收到完成提醒并核验修复报告，再启动复审阶段。
+
+## 复审阶段：fresh reviewer（独立 workflow）
+
+复审使用与 fix 相同的 `missionId` 和 `laneKey`。领导者注入原任务包、fix 汇报、fix diff 定位方式与 open findings。
 
 ```js
-// 源 workflow 必须已 terminal（status 确认过），其 workflow-receipt.json 里才有该 key 的 entry；
-// key = 上一轮该 child 的实际启动 key（= lane.latestWorkflowKey），不硬编码
-return runs.run(laneKey + "-fix", {
-  resume: { workflowRunId: "<源 workflowRunId>", key: lane.latestWorkflowKey, latest: true },
-  task: `<续作任务包>`
-});
+subagent({
+  workflowScript: `
+    const laneKey = "t1";
+    const lane = await state.get("lane." + laneKey);
+    if (!lane) throw new Error("lane " + laneKey + " 不存在：检查 missionId，停止复审");
+    if (lane.phase !== "fix-done-pending-review") {
+      throw new Error("lane phase=" + lane.phase + " 不是 fix-done-pending-review，停止复审");
+    }
+    await state.set("lane." + laneKey, { ...lane, phase: "reviewing" });
+
+    const review = await runs.run(laneKey + "-review-" + lane.round, {
+      agent: "reviewer",
+      context: "fresh",
+      task: \`<修复后评审包：原任务包 + fix 汇报 + fix diff + open findings>\`
+    });
+    if (review.error || review.timedOut || review.stopped || !review.runId) {
+      throw new Error("reviewer 未成功完成：" + (review.error ?? "缺少 retained run id"));
+    }
+
+    const current = await state.get("lane." + laneKey);
+    await state.set("lane." + laneKey, {
+      ...current,
+      phase: "reviewed",
+      reviewVerdict: "待领导者裁决",
+      reviewRunId: review.runId,
+      artifactRefs: [...(lane.artifactRefs ?? []), ...(review.artifactPaths ?? [])].slice(0, 5)
+    });
+    return {
+      laneKey,
+      reviewRunId: review.runId,
+      reviewSummary: (review.output ?? "").slice(0, 600)
+    };
+  `,
+  missionId: "<同一 missionId>",
+  async: true
+})
 ```
+
+该 re-review workflow 在写入 `reviewed` 后立即 terminal，领导者收到完成提醒并再次执行裁决回写。
 
 ## challenger 第 1 轮（fresh）
 
@@ -306,7 +289,7 @@ subagent({
       artifactRefs: [...(lane.artifactRefs ?? []), ...(c1.artifactPaths ?? [])].slice(0, 5)
     });
     return { runId: c1.runId, findings: (c1.output ?? "").slice(0, 600) };
-  \`,
+  `,
   mission: { title: "挑战评审：<设计名>", objective: "对抗性审查设计并输出分级 findings" },
   async: true
 })
@@ -352,7 +335,7 @@ subagent({
       artifactRefs: [...(lane.artifactRefs ?? []), ...(c2.artifactPaths ?? [])].slice(0, 5)
     });
     return { runId: c2.runId, findings: (c2.output ?? "").slice(0, 600) };
-  \`,
+  `,
   missionId: "<同一 missionId>",
   async: true,
   isolation: "none"   // resume 需共享 cwd；不得 worktree: true
@@ -449,8 +432,7 @@ return results.map((r, i) => ({ key: questions[i].key, brief: r.output }));
 
 ## 通用纪律
 
-- 多轮工作外层必须 `async: true` + mission/missionId（见 SKILL.md「编排状态与恢复」）；仅一次性
-  小任务可前台同步。async 启动后由领导者 `subagent_wait` 等待并记录回执（missionId / workflowRunId / keys）
+- 多轮工作的每个 executor/reviewer/fix/re-review 阶段必须使用独立顶层 `async: true` workflow + mission/missionId（见 SKILL.md「编排状态与恢复」）；仅一次性小任务可前台同步。async 启动后立即把控制权交回用户，依靠普通 completion wake；只有原生通知缺失或状态需要核对时才检查 status / `subagent_wait`。领导者记录每轮回执（missionId / workflowRunId / keys）
 - 失败的子 run：记下 key 与原因，修正任务包后**单独 resume 重派**，不重跑整批
 - 每个任务的 `task` 字段就是任务包本体，遵循 references/task-packets.md
 - resume item 不传 `agent` / `context` / `gate`（`agent` 与 `resume` 互斥、`gate` 被拒）
